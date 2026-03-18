@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mistral Agent Test</title>
+  <style>
+    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; background: #f5f5f5; }
+    h1 { font-size: 1.4rem; color: #333; }
+    #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; height: 400px; overflow-y: auto; margin-bottom: 12px; }
+    .msg { margin: 8px 0; }
+    .user { color: #1a73e8; font-weight: bold; }
+    .bot { color: #333; }
+    #input-row { display: flex; gap: 8px; }
+    #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
+    button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+    button:disabled { background: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>🤖 Mistral Agent Test Chat</h1>
+  <div id="chat-box"></div>
+  <div id="input-row">
+    <input id="user-input" type="text" placeholder="Type a message..." autofocus />
+    <button id="send-btn" onclick="sendMessage()">Send</button>
+  </div>
+
+  <script>
+    const chatBox = document.getElementById("chat-box");
+    const input = document.getElementById("user-input");
+    const btn = document.getElementById("send-btn");
+
+    input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+
+    function appendMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg";
+      div.innerHTML = `<span class="${role}">${role === "user" ? "You" : "Agent"}:</span> ${text}`;
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = "";
+      btn.disabled = true;
+      appendMessage("user", msg);
+
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: msg }),
+        });
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          const text = await res.text();
+          appendMessage("bot", `Error: Non‑JSON response from server: ${text.slice(0, 200)}...`);
+          btn.disabled = false;
+          input.focus();
+          return;
+        }
+
+        if (!res.ok) {
+          appendMessage("bot", `Error: ${data.error || res.statusText}`);
+        } else {
+          appendMessage("bot", data.reply || data.error || "No response");
+        }
+      } catch (err) {
+        appendMessage("bot", "Error: " + err.message);
+      }
+      btn.disabled = false;
+      input.focus();
+    }
+  </script>
+</body>
+</html>

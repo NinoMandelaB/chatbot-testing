@@ -28,6 +28,24 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 AGENT_ID = "ag_019cf8b9404e73c7ad980dfc212fbd26"
 
+COIN_PACKS = {
+    "small": {
+        "coins": 5000,
+        "price_kes": 70,
+        "label": "Small pack (5,000 coins ≈ 3–4 message pairs, KES 70)",
+    },
+    "regular": {
+        "coins": 30000,
+        "price_kes": 300,
+        "label": "Regular pack (30,000 coins ≈ 20 message pairs, KES 300)",
+    },
+    "heavy": {
+        "coins": 80000,
+        "price_kes": 700,
+        "label": "Heavy-use pack (80,000 coins ≈ 50+ message pairs, KES 700)",
+    },
+}
+
 
 # -----------------------------------
 # DB session per request
@@ -113,7 +131,7 @@ def register():
         )
         user.email = email
         user.gender = gender
-        user.coins = 0  # start with 0 coins
+        user.coins = 10000  # start with 10000 coins
 
         db.add(user)
         db.commit()
@@ -292,6 +310,35 @@ def buy_coins():
     db.refresh(user)
 
     return jsonify({"coins": user.coins})
+
+
+@app.route("/buy-pack", methods=["POST"])
+@login_required
+def buy_pack():
+    db = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.get_json(silent=True) or {}
+    pack_id = (data.get("pack") or "").strip()
+
+    pack = COIN_PACKS.get(pack_id)
+    if not pack:
+        return jsonify({"error": "Invalid pack id"}), 400
+
+    # For now, no real payment – just credit the coins.
+    coins_to_add = pack["coins"]
+    user.coins = user.coins + coins_to_add
+    db.commit()
+    db.refresh(user)
+
+    return jsonify({
+        "coins": user.coins,
+        "pack": pack_id,
+        "coins_added": coins_to_add,
+        "price_kes": pack["price_kes"],
+    })
 
 
 # -----------------------------------

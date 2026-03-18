@@ -1,7 +1,7 @@
 import os
 from flask import Flask, render_template, request, jsonify
-from mistralai import Mistral
-from mistralai.models import UserMessage  # message helper for agents.complete[web:44]
+from mistralai.client import Mistral
+from mistralai.client.models import UserMessage  # message helper for agents.complete[web:44]
 
 app = Flask(__name__)
 

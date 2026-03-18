@@ -99,8 +99,13 @@ def register():
             errors.append("Username already taken.")
 
         if errors:
-            return render_template("register.html", errors=errors,
-                                   username=username, email=email, gender=gender)
+            return render_template(
+                "register.html",
+                errors=errors,
+                username=username,
+                email=email,
+                gender=gender,
+            )
 
         user = User(
             username=username,
@@ -108,7 +113,7 @@ def register():
         )
         user.email = email
         user.gender = gender
-        user.coins = 0
+        user.coins = 0  # start with 0 coins
 
         db.add(user)
         db.commit()
@@ -129,8 +134,11 @@ def login():
 
         user = db.query(User).filter(User.username == username).first()
         if not user or not check_password_hash(user.password_hash, password):
-            return render_template("login.html", error="Invalid username or password.",
-                                   username=username)
+            return render_template(
+                "login.html",
+                error="Invalid username or password.",
+                username=username,
+            )
 
         session["user_id"] = str(user.id)
         return redirect(url_for("index"))
@@ -156,8 +164,11 @@ def index():
     if not user:
         return redirect(url_for("login"))
 
-    # You could also fetch last N messages here if you want to display history.
-    return render_template("index.html", username=user.username)
+    return render_template(
+        "index.html",
+        username=user.username,
+        coins=user.coins,
+    )
 
 
 @app.route("/chat", methods=["POST"])
@@ -167,6 +178,12 @@ def chat():
     user = get_current_user(db)
     if not user:
         return jsonify({"error": "Not authenticated"}), 401
+
+    # Block if no coins left
+    if user.coins <= 0:
+        return jsonify(
+            {"error": "You have no coins left. Please buy more to continue."}
+        ), 403
 
     data = request.get_json(silent=True) or {}
     user_message = data.get("message", "")
@@ -201,7 +218,7 @@ def chat():
             elif isinstance(content, list):
                 reply = "".join(str(part) for part in content if part)
 
-        # Extract usage if available
+        # Extract usage, if provided
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
@@ -210,26 +227,76 @@ def chat():
         if not reply:
             reply = "Agent returned an empty response."
 
+        # Deduct coins: naive rule = coins -= total_tokens (or 1 if None)
+        cost = total_tokens if isinstance(total_tokens, int) and total_tokens > 0 else 1
+        new_balance = user.coins - cost
+        if new_balance < 0:
+            new_balance = 0
+        user.coins = new_balance
+
         # Store agent reply in DB (encrypted)
         agent_msg = ChatMessage(user_id=user.id, role="agent")
         agent_msg.content = reply
         db.add(agent_msg)
         db.commit()
         db.refresh(agent_msg)
+        db.refresh(user)  # refresh coins
 
-        return jsonify({
-            "reply": reply,
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            },
-        })
+        return jsonify(
+            {
+                "reply": reply,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+                "coins": user.coins,
+            }
+        )
 
     except Exception as e:
         print("Error in /chat:", repr(e))
         return jsonify({"error": f"Backend error: {e}"}), 500
 
+
+# -----------------------------------
+# Routes: buy coins
+# -----------------------------------
+
+@app.route("/buy-coins", methods=["POST"])
+@login_required
+def buy_coins():
+    db = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.get_json(silent=True) or {}
+    amount = data.get("amount")
+
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid amount"}), 400
+
+    if amount <= 0:
+        return jsonify({"error": "Amount must be positive"}), 400
+
+    # Optional safety cap
+    if amount > 1000000:
+        return jsonify({"error": "Amount too large"}), 400
+
+    current = user.coins
+    user.coins = current + amount
+    db.commit()
+    db.refresh(user)
+
+    return jsonify({"coins": user.coins})
+
+
+# -----------------------------------
+# Main
+# -----------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

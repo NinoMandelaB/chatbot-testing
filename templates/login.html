@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login</title>
+  <style>
+    body { font-family: sans-serif; max-width: 400px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
+    h1 { font-size: 1.4rem; color: #333; margin-bottom: 16px; }
+    form { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+    label { display: block; margin-bottom: 4px; font-size: 0.9rem; }
+    input { width: 100%; padding: 8px; margin-bottom: 12px; border: 1px solid #ddd; border-radius: 4px; }
+    button { width: 100%; padding: 10px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+    .error { color: #b00020; margin-bottom: 8px; font-size: 0.9rem; }
+    .link { margin-top: 8px; font-size: 0.9rem; }
+    a { color: #1a73e8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Login</h1>
+  <form method="post">
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+    <label for="username">Username</label>
+    <input id="username" name="username" value="{{ username or '' }}" required />
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" required />
+
+    <button type="submit">Login</button>
+  </form>
+  <div class="link">
+    No account yet? <a href="/register">Register</a>
+  </div>
+</body>
+</html>

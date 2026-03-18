@@ -7,7 +7,10 @@
     body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; background: #f5f5f5; }
     h1 { font-size: 1.4rem; color: #333; margin-bottom: 4px; }
     #top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.95rem; }
-    #token-summary { font-size: 0.9rem; color: #555; margin-bottom: 12px; }
+    #token-summary { font-size: 0.9rem; color: #555; margin-bottom: 8px; }
+    #coins-bar { font-size: 0.9rem; color: #333; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+    #coins-bar input { width: 80px; padding: 4px; border: 1px solid #ddd; border-radius: 4px; }
+    #coins-bar button { padding: 6px 10px; font-size: 0.85rem; }
     #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; height: 400px; overflow-y: auto; margin-bottom: 12px; }
     .msg { margin: 8px 0; }
     .user { color: #1a73e8; font-weight: bold; }
@@ -15,7 +18,7 @@
     #input-row { display: flex; gap: 8px; }
     #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
     button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
-    button:disabled { background: #aaa; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
   </style>
@@ -27,10 +30,18 @@
   </div>
 
   <h1>🤖 Mistral Agent Test Chat</h1>
+
   <div id="token-summary">
     Session tokens — prompt: <span id="sum-prompt">0</span>,
     completion: <span id="sum-completion">0</span>,
     total: <span id="sum-total">0</span>
+  </div>
+
+  <div id="coins-bar">
+    Coins: <strong id="coins-value">{{ coins }}</strong>
+    <span id="coins-warning" style="color:#b00020; display:none;">No coins left. Buy more to continue.</span>
+    <input id="buy-amount" type="number" min="1" placeholder="Amount" />
+    <button id="buy-btn" type="button" onclick="buyCoins()">Buy coins</button>
   </div>
 
   <div id="chat-box"></div>
@@ -48,9 +59,34 @@
     const sumCompletionEl = document.getElementById("sum-completion");
     const sumTotalEl = document.getElementById("sum-total");
 
+    const coinsValueEl = document.getElementById("coins-value");
+    const coinsWarningEl = document.getElementById("coins-warning");
+    const buyAmountEl = document.getElementById("buy-amount");
+    const buyBtn = document.getElementById("buy-btn");
+
     let sumPrompt = 0;
     let sumCompletion = 0;
     let sumTotal = 0;
+
+    function getCoins() {
+      return parseInt(coinsValueEl.textContent || "0", 10);
+    }
+
+    function setCoins(value) {
+      coinsValueEl.textContent = value;
+      if (value <= 0) {
+        coinsWarningEl.style.display = "inline";
+        btn.disabled = true;
+        input.disabled = true;
+      } else {
+        coinsWarningEl.style.display = "none";
+        btn.disabled = false;
+        input.disabled = false;
+      }
+    }
+
+    // Initialize coin state on page load
+    setCoins(getCoins());
 
     input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
@@ -81,6 +117,11 @@
     async function sendMessage() {
       const msg = input.value.trim();
       if (!msg) return;
+      if (getCoins() <= 0) {
+        appendMessage("bot", "You have no coins left. Buy more to continue.");
+        return;
+      }
+
       input.value = "";
       btn.disabled = true;
       appendMessage("user", msg);
@@ -109,13 +150,50 @@
           const text = data.reply || data.error || "No response";
           appendMessage("bot", text);
           updateTokenSummary(data.usage);
+          if (typeof data.coins === "number") {
+            setCoins(data.coins);
+          }
         }
 
       } catch (err) {
         appendMessage("bot", "Error: " + err.message);
       }
-      btn.disabled = false;
+      btn.disabled = getCoins() <= 0;
+      input.disabled = getCoins() <= 0;
       input.focus();
+    }
+
+    async function buyCoins() {
+      const raw = buyAmountEl.value.trim();
+      const amount = parseInt(raw, 10);
+      if (!amount || amount <= 0) {
+        appendMessage("bot", "Enter a positive amount of coins to buy.");
+        return;
+      }
+
+      buyBtn.disabled = true;
+
+      try {
+        const res = await fetch("/buy-coins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          appendMessage("bot", `Error buying coins: ${data.error || res.statusText}`);
+        } else {
+          setCoins(data.coins);
+          appendMessage("bot", `You bought ${amount} coins. New balance: ${data.coins}.`);
+          buyAmountEl.value = "";
+        }
+      } catch (err) {
+        appendMessage("bot", "Error buying coins: " + err.message);
+      }
+
+      buyBtn.disabled = false;
     }
   </script>
 </body>

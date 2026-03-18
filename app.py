@@ -1,7 +1,7 @@
 import os
 from flask import Flask, render_template, request, jsonify
 from mistralai.client import Mistral
-from mistralai.client.models import UserMessage  # message helper for agents.complete[web:44]
+from mistralai.client.models import UserMessage
 
 app = Flask(__name__)
 
@@ -10,7 +10,6 @@ AGENT_ID = "ag_019cf8b9404e73c7ad980dfc212fbd26"
 
 
 def get_client() -> Mistral:
-    # Simple helper to create a client; for a tiny app this is fine.[web:2][web:46]
     return Mistral(api_key=MISTRAL_API_KEY)
 
 
@@ -32,31 +31,42 @@ def chat():
     try:
         client = get_client()
 
-        # Use the Agents SDK: agents.complete with your agent id.[web:42][web:44][web:46]
+        # Call your agent via the SDK
         response = client.agents.complete(
             messages=[UserMessage(content=user_message)],
             agent_id=AGENT_ID,
             max_tokens=512,
         )
 
-        # The response has .choices[0].message.content, like chat completions.[web:42][web:44]
+        # Extract reply text
         reply = ""
         if getattr(response, "choices", None):
             msg = response.choices[0].message
-            # msg.content can be a string or list; handle both.[web:44]
             content = getattr(msg, "content", "")
             if isinstance(content, str):
                 reply = content
             elif isinstance(content, list):
                 reply = "".join(str(part) for part in content if part)
 
+        # Extract token usage, if provided by the SDK
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+        completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+
         if not reply:
             reply = "Agent returned an empty response."
 
-        return jsonify({"reply": reply})
+        return jsonify({
+            "reply": reply,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            },
+        })
 
     except Exception as e:
-        # Log to stdout for Railway logs
         print("Error calling Mistral agents.complete:", repr(e))
         return jsonify({"error": f"Backend error: {e}"}), 500
 

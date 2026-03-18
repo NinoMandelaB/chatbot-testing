@@ -1,25 +1,173 @@
 import os
-from flask import Flask, render_template, request, jsonify
+from functools import wraps
+
+from flask import (
+    Flask,
+    render_template,
+    request,
+    jsonify,
+    redirect,
+    url_for,
+    session,
+    g,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 from mistralai.client import Mistral
 from mistralai.client.models import UserMessage
 
-app = Flask(__name__)
+from database import SessionLocal
+from models import User, ChatMessage
+
+# -----------------------------------
+# Flask setup
+# -----------------------------------
+
+app = Flask(__name__, template_folder="templates")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 AGENT_ID = "ag_019cf8b9404e73c7ad980dfc212fbd26"
 
 
-def get_client() -> Mistral:
+# -----------------------------------
+# DB session per request
+# -----------------------------------
+
+@app.before_request
+def create_session():
+    g.db = SessionLocal()
+
+
+@app.teardown_request
+def close_session(exception=None):
+    db = getattr(g, "db", None)
+    if db is not None:
+        db.close()
+
+
+# -----------------------------------
+# Mistral client helper
+# -----------------------------------
+
+def get_mistral_client() -> Mistral:
     return Mistral(api_key=MISTRAL_API_KEY)
 
 
+# -----------------------------------
+# Auth helpers
+# -----------------------------------
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login"))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def get_current_user(db):
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return db.query(User).filter(User.id == user_id).first()
+
+
+# -----------------------------------
+# Routes: auth
+# -----------------------------------
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        db = g.db
+        username = request.form.get("username", "").strip()
+        email = request.form.get("email", "").strip()
+        gender = request.form.get("gender", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+
+        errors = []
+
+        if not username or not email or not password:
+            errors.append("Username, email and password are required.")
+        if password != confirm:
+            errors.append("Passwords do not match.")
+
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            errors.append("Username already taken.")
+
+        if errors:
+            return render_template("register.html", errors=errors,
+                                   username=username, email=email, gender=gender)
+
+        user = User(
+            username=username,
+            password_hash=generate_password_hash(password),
+        )
+        user.email = email
+        user.gender = gender
+        user.coins = 0
+
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        session["user_id"] = str(user.id)
+        return redirect(url_for("index"))
+
+    return render_template("register.html", errors=[])
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        db = g.db
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        user = db.query(User).filter(User.username == username).first()
+        if not user or not check_password_hash(user.password_hash, password):
+            return render_template("login.html", error="Invalid username or password.",
+                                   username=username)
+
+        session["user_id"] = str(user.id)
+        return redirect(url_for("index"))
+
+    return render_template("login.html", error=None)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# -----------------------------------
+# Routes: main chat
+# -----------------------------------
+
 @app.route("/")
+@login_required
 def index():
-    return render_template("index.html")
+    db = g.db
+    user = get_current_user(db)
+    if not user:
+        return redirect(url_for("login"))
+
+    # You could also fetch last N messages here if you want to display history.
+    return render_template("index.html", username=user.username)
 
 
 @app.route("/chat", methods=["POST"])
+@login_required
 def chat():
+    db = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
     data = request.get_json(silent=True) or {}
     user_message = data.get("message", "")
     if not user_message:
@@ -29,16 +177,21 @@ def chat():
         return jsonify({"error": "MISTRAL_API_KEY not set"}), 500
 
     try:
-        client = get_client()
+        # Store user message in DB (encrypted)
+        user_msg = ChatMessage(user_id=user.id, role="user")
+        user_msg.content = user_message
+        db.add(user_msg)
+        db.commit()
+        db.refresh(user_msg)
 
-        # Call your agent via the SDK
+        client = get_mistral_client()
         response = client.agents.complete(
             messages=[UserMessage(content=user_message)],
             agent_id=AGENT_ID,
             max_tokens=512,
         )
 
-        # Extract reply text
+        # Extract reply
         reply = ""
         if getattr(response, "choices", None):
             msg = response.choices[0].message
@@ -48,7 +201,7 @@ def chat():
             elif isinstance(content, list):
                 reply = "".join(str(part) for part in content if part)
 
-        # Extract token usage, if provided by the SDK
+        # Extract usage if available
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
@@ -56,6 +209,13 @@ def chat():
 
         if not reply:
             reply = "Agent returned an empty response."
+
+        # Store agent reply in DB (encrypted)
+        agent_msg = ChatMessage(user_id=user.id, role="agent")
+        agent_msg.content = reply
+        db.add(agent_msg)
+        db.commit()
+        db.refresh(agent_msg)
 
         return jsonify({
             "reply": reply,
@@ -67,7 +227,7 @@ def chat():
         })
 
     except Exception as e:
-        print("Error calling Mistral agents.complete:", repr(e))
+        print("Error in /chat:", repr(e))
         return jsonify({"error": f"Backend error: {e}"}), 500
 
 

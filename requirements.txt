@@ -1,2 +1,5 @@
 flask==3.0.3
 mistralai>=2.0.0
+SQLAlchemy==2.0.29
+psycopg2-binary==2.9.9
+cryptography==43.0.0

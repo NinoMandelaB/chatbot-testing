@@ -39,7 +39,7 @@ PAYSTACK_PUBLIC_KEY = os.environ.get("PAYSTACK_PUBLIC_KEY", "")
 GUEST_INITIAL_COINS      = 5000
 REGISTERED_INITIAL_COINS = 15000
 GUEST_COOKIE             = "guest_token"
-GUEST_TTL                = 60 * 60 * 24 * 30  # 30 days in seconds
+GUEST_TTL                = 60 * 60 * 24 * 30
 
 COIN_PACKS = {
     "small":   {"coins": 5000,  "price_kes": 70,  "label": "Small pack"},
@@ -53,7 +53,7 @@ PAYSTACK_HEADERS = lambda: {
 }
 
 # -----------------------------------
-# Redis setup (guest coins)
+# Redis (guest coins)
 # -----------------------------------
 
 _redis_client = None
@@ -65,30 +65,20 @@ def get_redis():
         _redis_client = redis_lib.from_url(url, decode_responses=True)
     return _redis_client
 
+def redis_guest_key(guest_id): return f"guest_coins:{guest_id}"
 
-def redis_guest_key(guest_id: str) -> str:
-    return f"guest_coins:{guest_id}"
-
-
-def get_guest_coins_redis(guest_id: str) -> int:
-    """Return current coin balance for guest_id, initialising to 5000 if new."""
-    r   = get_redis()
-    key = redis_guest_key(guest_id)
-    val = r.get(key)
+def get_guest_coins_redis(guest_id):
+    r, key = get_redis(), redis_guest_key(guest_id)
+    val    = r.get(key)
     if val is None:
-        # Brand-new guest — initialise and set TTL
         r.setex(key, GUEST_TTL, GUEST_INITIAL_COINS)
         return GUEST_INITIAL_COINS
-    # Refresh TTL on activity so active users don't expire
     r.expire(key, GUEST_TTL)
     return int(val)
 
-
-def set_guest_coins_redis(guest_id: str, coins: int):
-    r   = get_redis()
-    key = redis_guest_key(guest_id)
-    r.setex(key, GUEST_TTL, max(0, coins))
-
+def set_guest_coins_redis(guest_id, coins):
+    r = get_redis()
+    r.setex(redis_guest_key(guest_id), GUEST_TTL, max(0, coins))
 
 # -----------------------------------
 # DB session per request
@@ -98,21 +88,18 @@ def set_guest_coins_redis(guest_id: str, coins: int):
 def create_db_session():
     g.db = SessionLocal()
 
-
 @app.teardown_request
 def close_db_session(exception=None):
     db = getattr(g, "db", None)
-    if db is not None:
+    if db:
         db.close()
-
 
 # -----------------------------------
 # Helpers
 # -----------------------------------
 
-def get_mistral_client() -> Mistral:
+def get_mistral_client():
     return Mistral(api_key=MISTRAL_API_KEY)
-
 
 def get_current_user(db):
     user_id = session.get("user_id")
@@ -120,13 +107,11 @@ def get_current_user(db):
         return None
     return db.query(User).filter(User.id == user_id).first()
 
-
-def log_transaction(db, user, delta: int, reason: str):
+def log_transaction(db, user, delta, reason):
     tx        = CoinTransaction(user_id=user.id)
     tx.delta  = delta
     tx.reason = reason
     db.add(tx)
-
 
 # -----------------------------------
 # Routes: auth
@@ -142,6 +127,11 @@ def register():
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm", "")
 
+        # E2EE fields from JS (generated in browser before form submit)
+        kdf_salt               = request.form.get("kdf_salt", "").strip()
+        encrypted_dek          = request.form.get("encrypted_dek", "").strip()
+        recovery_encrypted_dek = request.form.get("recovery_encrypted_dek", "").strip()
+
         errors = []
         if not username or not email or not password:
             errors.append("Username, email and password are required.")
@@ -149,6 +139,8 @@ def register():
             errors.append("Passwords do not match.")
         if db.query(User).filter(User.username == username).first():
             errors.append("Username already taken.")
+        if not kdf_salt or not encrypted_dek or not recovery_encrypted_dek:
+            errors.append("Encryption setup failed — please try again.")
 
         if errors:
             return render_template(
@@ -157,10 +149,13 @@ def register():
                 registered_coins=REGISTERED_INITIAL_COINS,
             )
 
-        user            = User(username=username, password_hash=generate_password_hash(password))
-        user.email      = email
-        user.gender     = gender
-        user.coins      = REGISTERED_INITIAL_COINS
+        user                          = User(username=username, password_hash=generate_password_hash(password))
+        user.email                    = email
+        user.gender                   = gender
+        user.coins                    = REGISTERED_INITIAL_COINS
+        user.kdf_salt                 = kdf_salt
+        user.encrypted_dek            = encrypted_dek
+        user.recovery_encrypted_dek   = recovery_encrypted_dek
         db.add(user)
         db.flush()
 
@@ -202,6 +197,73 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# -----------------------------------
+# E2EE: key bootstrap endpoints
+# -----------------------------------
+
+@app.route("/api/kdf-params", methods=["POST"])
+def kdf_params():
+    """
+    Called by the login page BEFORE password is submitted,
+    so JS can derive the key client-side.
+    Also used during recovery flow.
+    """
+    data     = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    db       = g.db
+    user     = db.query(User).filter(User.username == username).first()
+    if not user:
+        # Return fake data to prevent username enumeration
+        return jsonify({"salt": "0" * 32, "encrypted_dek": "", "recovery_encrypted_dek": ""})
+    return jsonify({
+        "salt":                   user.kdf_salt,
+        "encrypted_dek":          user.encrypted_dek,
+        "recovery_encrypted_dek": user.recovery_encrypted_dek,
+    })
+
+
+@app.route("/api/save-message", methods=["POST"])
+def save_message():
+    """Store a browser-encrypted message (ciphertext only — server is blind)."""
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data         = request.get_json(silent=True) or {}
+    role         = data.get("role", "")
+    content_enc  = data.get("content_enc", "")   # hex ciphertext from browser
+
+    if role not in ("user", "agent") or not content_enc:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    msg             = ChatMessage(user_id=user.id, role=role)
+    msg.content_enc = content_enc          # stored as-is, server cannot read it
+    db.add(msg)
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/messages")
+def get_messages():
+    """Return encrypted message blobs — client decrypts them."""
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    msgs = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == user.id)
+        .order_by(ChatMessage.created_at)
+        .all()
+    )
+    return jsonify([
+        {"role": m.role, "content_enc": m.content_enc, "created_at": m.created_at.isoformat()}
+        for m in msgs
+    ])
 
 
 # -----------------------------------
@@ -247,11 +309,8 @@ def index():
                                is_guest=False,
                                paystack_public_key=PAYSTACK_PUBLIC_KEY)
 
-    # Guest — guest_id comes from JS (sent as query param on first load)
-    # On subsequent loads the JS sends it via the hidden field approach below
     guest_id = request.args.get("guest_id", "")
     if not guest_id:
-        # No guest_id yet — render page, JS will generate one and reload
         return render_template("index.html",
                                username="Guest",
                                coins=GUEST_INITIAL_COINS,
@@ -274,19 +333,21 @@ def chat():
     user     = get_current_user(db)
     is_guest = user is None
 
-    # For guests, guest_id comes in the JSON body
+    data     = request.get_json(silent=True) or {}
     guest_id = None
+
     if is_guest:
-        data     = request.get_json(silent=True) or {}
         guest_id = data.get("guest_id", "")
         coins    = get_guest_coins_redis(guest_id) if guest_id else 0
         if coins <= 0:
             return jsonify({"error": "no_coins"}), 403
     else:
-        data = request.get_json(silent=True) or {}
         if user.coins <= 0:
             return jsonify({"error": "no_coins"}), 403
 
+    # For logged-in users the browser sends the ENCRYPTED user message
+    # and we forward the PLAINTEXT to Mistral (we have to — the AI needs to read it).
+    # What we store server-side afterwards is only the re-encrypted ciphertext via /api/save-message.
     user_message = data.get("message", "")
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
@@ -294,12 +355,6 @@ def chat():
         return jsonify({"error": "MISTRAL_API_KEY not set"}), 500
 
     try:
-        if not is_guest:
-            user_msg         = ChatMessage(user_id=user.id, role="user")
-            user_msg.content = user_message
-            db.add(user_msg)
-            db.commit()
-
         client   = get_mistral_client()
         response = client.agents.complete(
             messages=[UserMessage(content=user_message)],
@@ -331,11 +386,6 @@ def chat():
         else:
             current_coins = max(0, user.coins - cost)
             user.coins    = current_coins
-
-            agent_msg         = ChatMessage(user_id=user.id, role="agent")
-            agent_msg.content = reply
-            db.add(agent_msg)
-
             log_transaction(db, user, -cost, f"chat_message tokens={total_tokens}")
             db.commit()
             db.refresh(user)
@@ -357,7 +407,7 @@ def chat():
 
 
 # -----------------------------------
-# Routes: Paystack payment
+# Routes: Paystack
 # -----------------------------------
 
 @app.route("/payment/init", methods=["POST"])
@@ -372,49 +422,30 @@ def payment_init():
     pack    = COIN_PACKS.get(pack_id)
     if not pack:
         return jsonify({"error": "Invalid pack"}), 400
-
     if not PAYSTACK_SECRET_KEY:
-        return jsonify({"error": "PAYSTACK_SECRET_KEY not configured on server"}), 500
-
-    try:
-        email = user.email
-    except Exception as e:
-        return jsonify({"error": "Could not read user email"}), 500
+        return jsonify({"error": "PAYSTACK_SECRET_KEY not configured"}), 500
 
     reference = f"coins_{user.id}_{uuid.uuid4().hex[:12]}"
-
-    payload = {
-        "email":        email,
+    payload   = {
+        "email":        user.email,
         "amount":       pack["price_kes"] * 100,
         "currency":     "KES",
         "reference":    reference,
         "callback_url": url_for("payment_callback", _external=True),
-        "metadata": {
-            "pack_id": pack_id,
-            "user_id": str(user.id),
-        },
+        "metadata":     {"pack_id": pack_id, "user_id": str(user.id)},
     }
 
     try:
-        r = http_requests.post(
-            "https://api.paystack.co/transaction/initialize",
-            json=payload, headers=PAYSTACK_HEADERS(), timeout=10,
-        )
+        r = http_requests.post("https://api.paystack.co/transaction/initialize",
+                               json=payload, headers=PAYSTACK_HEADERS(), timeout=10)
+        resp_data = r.json()
     except Exception as e:
         return jsonify({"error": f"Could not reach Paystack: {e}"}), 502
-
-    try:
-        resp_data = r.json()
-    except Exception:
-        return jsonify({"error": "Paystack returned invalid response"}), 502
 
     if not resp_data.get("status"):
         return jsonify({"error": resp_data.get("message", "Unknown Paystack error")}), 502
 
-    return jsonify({
-        "authorization_url": resp_data["data"]["authorization_url"],
-        "reference":         reference,
-    })
+    return jsonify({"authorization_url": resp_data["data"]["authorization_url"], "reference": reference})
 
 
 @app.route("/payment/callback")
@@ -422,24 +453,17 @@ def payment_callback():
     reference = request.args.get("reference", "")
     if not reference:
         return redirect(url_for("index"))
-
     try:
-        r         = http_requests.get(
-            f"https://api.paystack.co/transaction/verify/{reference}",
-            headers=PAYSTACK_HEADERS(), timeout=10,
-        )
+        r         = http_requests.get(f"https://api.paystack.co/transaction/verify/{reference}",
+                                      headers=PAYSTACK_HEADERS(), timeout=10)
         resp_data = r.json()
     except Exception:
         return redirect(url_for("index") + "?payment=failed")
 
-    if not resp_data.get("status"):
+    if not resp_data.get("status") or resp_data["data"].get("status") != "success":
         return redirect(url_for("index") + "?payment=failed")
 
-    tx = resp_data["data"]
-    if tx.get("status") != "success":
-        return redirect(url_for("index") + "?payment=failed")
-
-    meta    = tx.get("metadata", {})
+    meta    = resp_data["data"].get("metadata", {})
     pack_id = meta.get("pack_id")
     user_id = meta.get("user_id")
     pack    = COIN_PACKS.get(pack_id)
@@ -458,13 +482,9 @@ def payment_callback():
 
 @app.route("/payment/webhook", methods=["POST"])
 def payment_webhook():
-    sig  = request.headers.get("X-Paystack-Signature", "")
-    body = request.get_data()
-
-    expected = hmac.new(
-        PAYSTACK_SECRET_KEY.encode(), body, hashlib.sha512
-    ).hexdigest()
-
+    sig      = request.headers.get("X-Paystack-Signature", "")
+    body     = request.get_data()
+    expected = hmac.new(PAYSTACK_SECRET_KEY.encode(), body, hashlib.sha512).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return "", 400
 
@@ -476,7 +496,6 @@ def payment_webhook():
     meta    = tx.get("metadata", {})
     pack_id = meta.get("pack_id")
     user_id = meta.get("user_id")
-    ref     = tx.get("reference", "webhook")
     pack    = COIN_PACKS.get(pack_id)
 
     if pack and user_id:
@@ -485,15 +504,11 @@ def payment_webhook():
         if user:
             user.coins += pack["coins"]
             log_transaction(db, user, +pack["coins"],
-                            f"paystack_webhook pack={pack_id} ref={ref} kes={pack['price_kes']}")
+                            f"paystack_webhook pack={pack_id} ref={tx.get('reference','webhook')} kes={pack['price_kes']}")
             db.commit()
 
     return "", 200
 
-
-# -----------------------------------
-# Routes: manual test top-up
-# -----------------------------------
 
 @app.route("/buy-coins", methods=["POST"])
 def buy_coins():
@@ -509,10 +524,8 @@ def buy_coins():
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid amount"}), 400
 
-    if amount <= 0:
-        return jsonify({"error": "Amount must be positive"}), 400
-    if amount > 1000000:
-        return jsonify({"error": "Amount too large"}), 400
+    if amount <= 0:     return jsonify({"error": "Amount must be positive"}), 400
+    if amount > 1000000: return jsonify({"error": "Amount too large"}), 400
 
     user.coins += amount
     log_transaction(db, user, +amount, "manual_test_topup")
@@ -520,10 +533,6 @@ def buy_coins():
     db.refresh(user)
     return jsonify({"coins": user.coins})
 
-
-# -----------------------------------
-# Main
-# -----------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

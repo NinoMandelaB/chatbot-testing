@@ -184,7 +184,7 @@
 
   <script>
     const IS_GUEST = {{ 'true' if is_guest else 'false' }};
-    const USERNAME = {{ (username|tojson) if not is_guest else '""' }};
+    const USERNAME = {{ username|tojson }};
     let GUEST_ID = null;
     let currentSessionId = null;
     let sessionCache = {};

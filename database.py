@@ -1,8 +1,8 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-DATABASE_URL = os.getenv("DATABASE_URL")  # Railway injects this for Postgres[web:69][web:81]
+DATABASE_URL = os.getenv("DATABASE_URL")  # Railway injects this for Postgres
 
 
 class Base(DeclarativeBase):
@@ -15,3 +15,40 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+def run_migrations():
+    """
+    Lightweight migration helper that runs once at startup.
+    Adds any columns that exist in models but not yet in the DB,
+    and converts content_enc from bytea -> text if needed.
+    """
+    insp = inspect(engine)
+
+    # --- chat_messages table --------------------------------------------------
+    if insp.has_table("chat_messages"):
+        cols = {c["name"] for c in insp.get_columns("chat_messages")}
+
+        with engine.begin() as conn:
+            # Add chat_session_id if missing
+            if "chat_session_id" not in cols:
+                conn.execute(text(
+                    'ALTER TABLE chat_messages '
+                    'ADD COLUMN chat_session_id VARCHAR(36)'
+                ))
+                print("Migration: added chat_session_id to chat_messages")
+
+            # Fix content_enc type: if it's bytea, cast to text so
+            # psycopg2 returns plain strings instead of memoryview.
+            col_info = next(
+                (c for c in insp.get_columns("chat_messages")
+                 if c["name"] == "content_enc"),
+                None,
+            )
+            if col_info and str(col_info["type"]).upper().startswith(("BYTEA", "LARGE")):
+                conn.execute(text(
+                    'ALTER TABLE chat_messages '
+                    'ALTER COLUMN content_enc TYPE TEXT '
+                    'USING encode(content_enc, \'escape\')'
+                ))
+                print("Migration: converted content_enc from bytea to text")

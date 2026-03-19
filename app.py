@@ -20,7 +20,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from mistralai.client import Mistral
 from mistralai.client.models import UserMessage
 
-from database import SessionLocal
+from database import SessionLocal, run_migrations
 from models import User, ChatMessage, CoinTransaction
 
 
@@ -373,15 +373,21 @@ def get_messages():
         .all()
     )
 
-    return jsonify([
-        {
+    result = []
+    for m in msgs:
+        # content_enc may come back as memoryview / bytes from PostgreSQL
+        # if the DB column is BYTEA. Coerce to str for JSON serialization.
+        raw = m.content_enc
+        if isinstance(raw, (memoryview, bytes, bytearray)):
+            raw = bytes(raw).decode("utf-8", errors="replace")
+
+        result.append({
             "role": m.role,
-            "content_enc": m.content_enc,
+            "content_enc": raw,
             "chat_session_id": m.chat_session_id,
-            "created_at": m.created_at.isoformat(),
-        }
-        for m in msgs
-    ])
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        })
+    return jsonify(result)
 
 
 # -----------------------------------
@@ -705,5 +711,6 @@ def reset_password():
 
 
 if __name__ == "__main__":
+    run_migrations()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

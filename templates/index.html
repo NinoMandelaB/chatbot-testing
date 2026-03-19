@@ -21,52 +21,63 @@
     #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
     button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
     button:disabled { background: #aaa; cursor: not-allowed; }
-    .btn-danger { background: #c0392b; }
-    .btn-danger:hover { background: #a93226; }
+    .btn-danger { background: #c0392b !important; }
+    .btn-danger:hover { background: #a93226 !important; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
 
-    /* overlay */
-    .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:100; justify-content:center; align-items:center; }
-    .overlay.show { display:flex; }
-    .overlay-box { background:white; border-radius:12px; padding:32px 28px; max-width:420px; width:90%; text-align:center; }
-    .overlay-box h2 { margin-top:0; font-size:1.3rem; color:#333; }
-    .overlay-box p  { color:#555; font-size:0.95rem; line-height:1.5; }
-    .overlay-box .bonus { font-size:1.1rem; font-weight:bold; color:#1a73e8; margin:12px 0; }
-    .btn-row { display:flex; gap:10px; justify-content:center; margin-top:20px; flex-wrap:wrap; }
-    .btn-row a, .btn-row button { padding:10px 24px; border-radius:6px; font-size:1rem; font-weight:bold; text-decoration:none; }
-    .btn-primary   { background:#1a73e8; color:white !important; border:none; cursor:pointer; }
-    .btn-secondary { background:#f0f0f0; color:#333 !important; border:1px solid #ccc; cursor:pointer; }
-    .notice-success { background:#d4edda; color:#155724; padding:8px 12px; border-radius:6px; margin-bottom:10px; font-size:0.9rem; }
-    .notice-error   { background:#f8d7da; color:#721c24; padding:8px 12px; border-radius:6px; margin-bottom:10px; font-size:0.9rem; }
+    /* overlays */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; justify-content: center; align-items: center; }
+    .overlay.show { display: flex; }
+    .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 420px; width: 90%; text-align: center; }
+    .overlay-box h2 { margin-top: 0; font-size: 1.3rem; color: #333; }
+    .overlay-box p  { color: #555; font-size: 0.95rem; line-height: 1.5; }
+    .overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
+    .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+    .btn-row a, .btn-row button { padding: 10px 24px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; cursor: pointer; border: none; }
+    .btn-primary   { background: #1a73e8; color: white !important; }
+    .btn-secondary { background: #f0f0f0; color: #333 !important; border: 1px solid #ccc !important; }
+    .notice-success { background: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    .notice-error   { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
   </style>
 </head>
 <body>
 
-<!-- Zero-coins overlay -->
-<div id="overlay-coins" class="overlay">
-  <div class="overlay-box">
-    {% if is_guest %}
-      <h2>🪙 You've used all your free coins!</h2>
-      <p>Create a free account to keep chatting.</p>
-      <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
-      <p style="font-size:0.85rem;color:#888;">Already have an account? Log in to restore your balance.</p>
-      <div class="btn-row">
-        <a href="/register" class="btn-primary">Register (free)</a>
-        <a href="/login" class="btn-secondary">Login</a>
-      </div>
-    {% else %}
-      <h2>🪙 You've run out of coins!</h2>
-      <p>Top up your balance to keep chatting.</p>
-      <div class="btn-row">
-        <button class="btn-primary" onclick="overlayCoins.classList.remove('show'); payPack('small')">Small: 5,000 coins — KES 70</button>
-        <button class="btn-secondary" onclick="overlayCoins.classList.remove('show'); payPack('regular')">Regular: 30,000 coins — KES 300</button>
-        <button class="btn-secondary" onclick="overlayCoins.classList.remove('show'); payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
-      </div>
-    {% endif %}
+  <!-- ① Zero-coins overlay -->
+  <div id="overlay-coins" class="overlay">
+    <div class="overlay-box">
+      {% if is_guest %}
+        <h2>🪙 You've used all your free coins!</h2>
+        <p>Create a free account to keep chatting.</p>
+        <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
+        <p style="font-size:0.85rem;color:#888;">Already have an account? Log in to restore your balance.</p>
+        <div class="btn-row">
+          <a href="/register" class="btn-primary">Register (free)</a>
+          <a href="/login" class="btn-secondary">Login</a>
+        </div>
+      {% else %}
+        <h2>🪙 You've run out of coins!</h2>
+        <p>Top up your balance to keep chatting.</p>
+        <div class="btn-row">
+          <button class="btn-primary"   onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small: 5,000 coins — KES 70</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('regular')">Regular: 30,000 coins — KES 300</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
+        </div>
+      {% endif %}
+    </div>
   </div>
-</div>
 
+  <!-- ② Delete-account confirmation overlay -->
+  <div id="overlay-delete" class="overlay">
+    <div class="overlay-box">
+      <h2>⚠️ Delete account?</h2>
+      <p>This will permanently delete your account and <strong>all chat history and coins</strong>. This cannot be undone.</p>
+      <div class="btn-row">
+        <button class="btn-danger btn-primary" onclick="confirmDelete()">Yes, delete everything</button>
+        <button class="btn-secondary" onclick="document.getElementById('overlay-delete').classList.remove('show')">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <div id="top-bar">
     <div>
@@ -79,14 +90,16 @@
         <a href="/login">Login</a>
       {% else %}
         <a href="/logout">Logout</a>
-        <button class="btn-danger" style="padding:6px 12px;font-size:0.85rem;" onclick="openDeleteOverlay()">Delete account</button>
+        <button class="btn-danger" style="padding:6px 12px;font-size:0.85rem;"
+                onclick="document.getElementById('overlay-delete').classList.add('show')">
+          Delete account
+        </button>
       {% endif %}
     </div>
   </div>
 
   <h1>🤖 Mistral Agent Chat</h1>
 
-  <!-- Payment notices -->
   {% if request.args.get('payment') == 'success' %}
     <div class="notice-success">✅ Payment successful! Your coins have been credited.</div>
   {% elif request.args.get('payment') == 'failed' %}
@@ -209,7 +222,6 @@
       input.focus();
     }
 
-    // Manual test top-up
     async function buyCoins() {
       const buyAmountEl = document.getElementById("buy-amount");
       const amount = parseInt((buyAmountEl.value || "").trim(), 10);
@@ -224,7 +236,6 @@
       document.getElementById("buy-btn").disabled = false;
     }
 
-    // Paystack payment
     async function payPack(packId) {
       try {
         const res  = await fetch("/payment/init", {
@@ -234,14 +245,9 @@
         });
         const data = await res.json();
         if (!res.ok) { appendMessage("bot", `Payment error: ${data.error}`); return; }
-        // Redirect to Paystack checkout page
         window.location.href = data.authorization_url;
       } catch(err) { appendMessage("bot", "Payment error: " + err.message); }
     }
-
-    // Delete account
-    function openDeleteOverlay()  { overlayDelete.classList.add("show"); }
-    function closeDeleteOverlay() { overlayDelete.classList.remove("show"); }
 
     async function confirmDelete() {
       try {
@@ -251,11 +257,11 @@
         } else {
           const data = await res.json();
           alert("Error: " + (data.error || "Could not delete account."));
-          closeDeleteOverlay();
+          overlayDelete.classList.remove("show");
         }
       } catch(err) {
         alert("Error: " + err.message);
-        closeDeleteOverlay();
+        overlayDelete.classList.remove("show");
       }
     }
   </script>

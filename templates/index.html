@@ -2,15 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Mistral Agent Test</title>
+  <title>Mistral Agent Chat</title>
   <style>
+    *, *::before, *::after { box-sizing: border-box; }
     body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; background: #f5f5f5; }
     h1 { font-size: 1.4rem; color: #333; margin-bottom: 4px; }
     #top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.95rem; }
     #token-summary { font-size: 0.9rem; color: #555; margin-bottom: 8px; }
     #coins-bar { font-size: 0.9rem; color: #333; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     #coins-bar input { width: 80px; padding: 4px; border: 1px solid #ddd; border-radius: 4px; }
-    #coins-bar button { padding: 6px 10px; font-size: 0.85rem; }
     #packs { margin-bottom: 12px; font-size: 0.9rem; }
     #packs button { padding: 6px 10px; font-size: 0.85rem; margin-right: 4px; margin-top: 4px; }
     #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; height: 400px; overflow-y: auto; margin-bottom: 12px; }
@@ -23,15 +23,66 @@
     button:disabled { background: #aaa; cursor: not-allowed; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
+
+    /* overlay */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+    #overlay.show { display: flex; }
+    #overlay-box {
+      background: white;
+      border-radius: 12px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 90%;
+      text-align: center;
+    }
+    #overlay-box h2 { margin-top: 0; font-size: 1.3rem; color: #333; }
+    #overlay-box p { color: #555; font-size: 0.95rem; line-height: 1.5; }
+    #overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
+    #overlay-box .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+    #overlay-box .btn-row a { padding: 10px 24px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; }
+    .btn-primary { background: #1a73e8; color: white !important; }
+    .btn-secondary { background: #f0f0f0; color: #333 !important; border: 1px solid #ccc; }
   </style>
 </head>
 <body>
-  <div id="top-bar">
-    <div>Logged in as <strong>{{ username }}</strong></div>
-    <div><a href="/logout">Logout</a></div>
+
+  <!-- Zero-coins overlay -->
+  <div id="overlay">
+    <div id="overlay-box">
+      <h2>🪙 You've used all your free coins!</h2>
+      <p>Create a free account to keep chatting.</p>
+      <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
+      <p style="font-size:0.85rem;color:#888;">Already have an account? Log in to restore your balance.</p>
+      <div class="btn-row">
+        <a href="/register" class="btn-primary">Register (free)</a>
+        <a href="/login" class="btn-secondary">Login</a>
+      </div>
+    </div>
   </div>
 
-  <h1>🤖 Mistral Agent Test Chat</h1>
+  <div id="top-bar">
+    <div>
+      {% if is_guest %}Chatting as <strong>Guest</strong>
+      {% else %}Logged in as <strong>{{ username }}</strong>{% endif %}
+    </div>
+    <div>
+      {% if is_guest %}
+        <a href="/register">Register</a> &nbsp;|&nbsp; <a href="/login">Login</a>
+      {% else %}
+        <a href="/logout">Logout</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <h1>🤖 Mistral Agent Chat</h1>
 
   <div id="token-summary">
     Session tokens — prompt: <span id="sum-prompt">0</span>,
@@ -41,23 +92,20 @@
 
   <div id="coins-bar">
     Coins: <strong id="coins-value">{{ coins }}</strong>
-    <span id="coins-warning" style="color:#b00020; display:none;">No coins left. Buy more to continue.</span>
-    <input id="buy-amount" type="number" min="1" placeholder="Amount" />
-    <button id="buy-btn" type="button" onclick="buyCoins()">Buy coins</button>
+    {% if not is_guest %}
+      <input id="buy-amount" type="number" min="1" placeholder="Amount" />
+      <button id="buy-btn" type="button" onclick="buyCoins()">Buy coins</button>
+    {% endif %}
   </div>
 
+  {% if not is_guest %}
   <div id="packs">
-    <div><strong>Coin packs (test mode, no real payments yet):</strong></div>
-    <button type="button" onclick="buyPack('small')">
-      Small: 5,000 coins (KES 70)
-    </button>
-    <button type="button" onclick="buyPack('regular')">
-      Regular: 30,000 coins (KES 300)
-    </button>
-    <button type="button" onclick="buyPack('heavy')">
-      Heavy-use: 80,000 coins (KES 700)
-    </button>
+    <strong>Coin packs (test mode):</strong><br/>
+    <button type="button" onclick="buyPack('small')">Small: 5,000 coins (KES 70)</button>
+    <button type="button" onclick="buyPack('regular')">Regular: 30,000 coins (KES 300)</button>
+    <button type="button" onclick="buyPack('heavy')">Heavy-use: 80,000 coins (KES 700)</button>
   </div>
+  {% endif %}
 
   <div id="chat-box"></div>
   <div id="input-row">
@@ -66,42 +114,33 @@
   </div>
 
   <script>
-    const chatBox = document.getElementById("chat-box");
-    const input = document.getElementById("user-input");
-    const btn = document.getElementById("send-btn");
-
-    const sumPromptEl = document.getElementById("sum-prompt");
-    const sumCompletionEl = document.getElementById("sum-completion");
-    const sumTotalEl = document.getElementById("sum-total");
-
+    const chatBox      = document.getElementById("chat-box");
+    const input        = document.getElementById("user-input");
+    const btn          = document.getElementById("send-btn");
+    const overlay      = document.getElementById("overlay");
     const coinsValueEl = document.getElementById("coins-value");
-    const coinsWarningEl = document.getElementById("coins-warning");
-    const buyAmountEl = document.getElementById("buy-amount");
-    const buyBtn = document.getElementById("buy-btn");
+    const sumPromptEl  = document.getElementById("sum-prompt");
+    const sumCompletionEl = document.getElementById("sum-completion");
+    const sumTotalEl   = document.getElementById("sum-total");
 
-    let sumPrompt = 0;
-    let sumCompletion = 0;
-    let sumTotal = 0;
+    let sumPrompt = 0, sumCompletion = 0, sumTotal = 0;
 
-    function getCoins() {
-      return parseInt(coinsValueEl.textContent || "0", 10);
-    }
+    function getCoins() { return parseInt(coinsValueEl.textContent || "0", 10); }
 
     function setCoins(value) {
       coinsValueEl.textContent = value;
       if (value <= 0) {
-        coinsWarningEl.style.display = "inline";
-        btn.disabled = true;
+        btn.disabled   = true;
         input.disabled = true;
+        overlay.classList.add("show");
       } else {
-        coinsWarningEl.style.display = "none";
-        btn.disabled = false;
+        btn.disabled   = false;
         input.disabled = false;
+        overlay.classList.remove("show");
       }
     }
 
-    // Initialize coin state on page load
-    setCoins(getCoins());
+    setCoins(getCoins()); // init on load
 
     input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
@@ -115,30 +154,22 @@
 
     function updateTokenSummary(usage) {
       if (!usage) return;
-
-      const p = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0;
+      const p = typeof usage.prompt_tokens     === "number" ? usage.prompt_tokens     : 0;
       const c = typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0;
-      const t = typeof usage.total_tokens === "number" ? usage.total_tokens : 0;
-
-      sumPrompt += p;
-      sumCompletion += c;
-      sumTotal += t;
-
-      sumPromptEl.textContent = sumPrompt;
+      const t = typeof usage.total_tokens      === "number" ? usage.total_tokens      : 0;
+      sumPrompt += p; sumCompletion += c; sumTotal += t;
+      sumPromptEl.textContent     = sumPrompt;
       sumCompletionEl.textContent = sumCompletion;
-      sumTotalEl.textContent = sumTotal;
+      sumTotalEl.textContent      = sumTotal;
     }
 
     async function sendMessage() {
       const msg = input.value.trim();
       if (!msg) return;
-      if (getCoins() <= 0) {
-        appendMessage("bot", "You have no coins left. Buy more to continue.");
-        return;
-      }
+      if (getCoins() <= 0) { overlay.classList.add("show"); return; }
 
-      input.value = "";
-      btn.disabled = true;
+      input.value    = "";
+      btn.disabled   = true;
       appendMessage("user", msg);
 
       try {
@@ -149,91 +180,51 @@
         });
 
         let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          const text = await res.text();
-          appendMessage("bot", `Error: Non‑JSON response from server: ${text.slice(0, 200)}...`);
-          btn.disabled = false;
-          input.focus();
-          return;
+        try { data = await res.json(); }
+        catch(e) {
+          appendMessage("bot", "Error: unexpected server response.");
+          btn.disabled = false; input.focus(); return;
         }
 
-        if (!res.ok) {
+        if (res.status === 403 && data.error === "no_coins") {
+          setCoins(0);
+        } else if (!res.ok) {
           appendMessage("bot", `Error: ${data.error || res.statusText}`);
         } else {
-          const text = data.reply || data.error || "No response";
-          appendMessage("bot", text);
+          appendMessage("bot", data.reply || "No response");
           updateTokenSummary(data.usage);
-          if (typeof data.coins === "number") {
-            setCoins(data.coins);
-          }
+          if (typeof data.coins === "number") setCoins(data.coins);
         }
 
-      } catch (err) {
-        appendMessage("bot", "Error: " + err.message);
-      }
-      btn.disabled = getCoins() <= 0;
+      } catch(err) { appendMessage("bot", "Error: " + err.message); }
+
+      btn.disabled   = getCoins() <= 0;
       input.disabled = getCoins() <= 0;
       input.focus();
     }
 
     async function buyCoins() {
-      const raw = buyAmountEl.value.trim();
-      const amount = parseInt(raw, 10);
-      if (!amount || amount <= 0) {
-        appendMessage("bot", "Enter a positive amount of coins to buy.");
-        return;
-      }
-
-      buyBtn.disabled = true;
-
+      const buyAmountEl = document.getElementById("buy-amount");
+      const amount = parseInt((buyAmountEl.value || "").trim(), 10);
+      if (!amount || amount <= 0) { appendMessage("bot", "Enter a positive amount."); return; }
+      document.getElementById("buy-btn").disabled = true;
       try {
-        const res = await fetch("/buy-coins", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ amount }),
-        });
-
+        const res  = await fetch("/buy-coins", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
         const data = await res.json();
-
-        if (!res.ok) {
-          appendMessage("bot", `Error buying coins: ${data.error || res.statusText}`);
-        } else {
-          setCoins(data.coins);
-          appendMessage("bot", `You bought ${amount} coins. New balance: ${data.coins}.`);
-          buyAmountEl.value = "";
-        }
-      } catch (err) {
-        appendMessage("bot", "Error buying coins: " + err.message);
-      }
-
-      buyBtn.disabled = false;
+        if (!res.ok) appendMessage("bot", `Error: ${data.error}`);
+        else { setCoins(data.coins); appendMessage("bot", `Bought ${amount} coins. Balance: ${data.coins}.`); buyAmountEl.value = ""; }
+      } catch(err) { appendMessage("bot", "Error: " + err.message); }
+      document.getElementById("buy-btn").disabled = false;
     }
 
     async function buyPack(packId) {
       try {
-        const res = await fetch("/buy-pack", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pack: packId }),
-        });
-
+        const res  = await fetch("/buy-pack", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pack: packId}) });
         const data = await res.json();
-
-        if (!res.ok) {
-          appendMessage("bot", `Error buying pack: ${data.error || res.statusText}`);
-          return;
-        }
-
+        if (!res.ok) { appendMessage("bot", `Error: ${data.error}`); return; }
         setCoins(data.coins);
-        appendMessage(
-          "bot",
-          `Pack "${packId}" purchased: +${data.coins_added} coins (KES ${data.price_kes}). New balance: ${data.coins}.`
-        );
-      } catch (err) {
-        appendMessage("bot", "Error buying pack: " + err.message);
-      }
+        appendMessage("bot", `Pack "${packId}" purchased: +${data.coins_added} coins (KES ${data.price_kes}). Balance: ${data.coins}.`);
+      } catch(err) { appendMessage("bot", "Error: " + err.message); }
     }
   </script>
 </body>

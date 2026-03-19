@@ -303,4 +303,219 @@ def chat():
         cost = total_tokens if isinstance(total_tokens, int) and total_tokens > 0 else 1
 
         if is_guest:
-            current_coins = max(0, c
+            current_coins = max(0, coins - cost)
+            set_guest_coins(guest_token, current_coins)
+        else:
+            current_coins = max(0, user.coins - cost)
+            user.coins    = current_coins
+
+            agent_msg         = ChatMessage(user_id=user.id, role="agent")
+            agent_msg.content = reply
+            db.add(agent_msg)
+
+            log_transaction(db, user, -cost, f"chat_message tokens={total_tokens}")
+            db.commit()
+            db.refresh(user)
+
+        return jsonify({
+            "reply": reply,
+            "usage": {
+                "prompt_tokens":     prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens":      total_tokens,
+            },
+            "coins":    current_coins,
+            "is_guest": is_guest,
+        })
+
+    except Exception as e:
+        print("Error in /chat:", repr(e))
+        return jsonify({"error": f"Backend error: {e}"}), 500
+
+
+# -----------------------------------
+# Routes: Paystack payment
+# -----------------------------------
+
+@app.route("/payment/init", methods=["POST"])
+def payment_init():
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Login required to make payments"}), 401
+
+    data    = request.get_json(silent=True) or {}
+    pack_id = (data.get("pack") or "").strip()
+    pack    = COIN_PACKS.get(pack_id)
+    if not pack:
+        return jsonify({"error": "Invalid pack"}), 400
+
+    if not PAYSTACK_SECRET_KEY:
+        print("ERROR: PAYSTACK_SECRET_KEY is not set")
+        return jsonify({"error": "PAYSTACK_SECRET_KEY not configured on server"}), 500
+
+    try:
+        email = user.email
+    except Exception as e:
+        print("ERROR reading user email:", repr(e))
+        return jsonify({"error": "Could not read user email"}), 500
+
+    reference = f"coins_{user.id}_{uuid.uuid4().hex[:12]}"
+
+    payload = {
+        "email":        email,
+        "amount":       pack["price_kes"] * 100,
+        "currency":     "KES",
+        "reference":    reference,
+        "callback_url": url_for("payment_callback", _external=True),
+        "metadata": {
+            "pack_id": pack_id,
+            "user_id": str(user.id),
+        },
+    }
+
+    print("Paystack payload:", payload)
+
+    try:
+        r = http_requests.post(
+            "https://api.paystack.co/transaction/initialize",
+            json=payload,
+            headers=PAYSTACK_HEADERS(),
+            timeout=10,
+        )
+        print("Paystack status:", r.status_code)
+        print("Paystack response:", r.text)
+    except Exception as e:
+        print("ERROR calling Paystack:", repr(e))
+        return jsonify({"error": f"Could not reach Paystack: {e}"}), 502
+
+    try:
+        resp_data = r.json()
+    except Exception:
+        print("ERROR: Paystack returned non-JSON:", r.text)
+        return jsonify({"error": "Paystack returned invalid response"}), 502
+
+    if not resp_data.get("status"):
+        msg = resp_data.get("message", "Unknown Paystack error")
+        print("Paystack error message:", msg)
+        return jsonify({"error": msg}), 502
+
+    return jsonify({
+        "authorization_url": resp_data["data"]["authorization_url"],
+        "reference":         reference,
+    })
+
+
+@app.route("/payment/callback")
+def payment_callback():
+    reference = request.args.get("reference", "")
+    if not reference:
+        return redirect(url_for("index"))
+
+    try:
+        r = http_requests.get(
+            f"https://api.paystack.co/transaction/verify/{reference}",
+            headers=PAYSTACK_HEADERS(),
+            timeout=10,
+        )
+        resp_data = r.json()
+    except Exception as e:
+        print("ERROR verifying Paystack payment:", repr(e))
+        return redirect(url_for("index") + "?payment=failed")
+
+    if not resp_data.get("status"):
+        return redirect(url_for("index") + "?payment=failed")
+
+    tx = resp_data["data"]
+    if tx.get("status") != "success":
+        return redirect(url_for("index") + "?payment=failed")
+
+    meta    = tx.get("metadata", {})
+    pack_id = meta.get("pack_id")
+    user_id = meta.get("user_id")
+    pack    = COIN_PACKS.get(pack_id)
+
+    if pack and user_id:
+        db   = g.db
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.coins += pack["coins"]
+            log_transaction(db, user, +pack["coins"],
+                            f"paystack_purchase pack={pack_id} ref={reference} kes={pack['price_kes']}")
+            db.commit()
+
+    return redirect(url_for("index") + "?payment=success")
+
+
+@app.route("/payment/webhook", methods=["POST"])
+def payment_webhook():
+    sig  = request.headers.get("X-Paystack-Signature", "")
+    body = request.get_data()
+
+    expected = hmac.new(
+        PAYSTACK_SECRET_KEY.encode(), body, hashlib.sha512
+    ).hexdigest()
+
+    if not hmac.compare_digest(sig, expected):
+        return "", 400
+
+    event = request.get_json(silent=True) or {}
+    if event.get("event") != "charge.success":
+        return "", 200
+
+    tx      = event.get("data", {})
+    meta    = tx.get("metadata", {})
+    pack_id = meta.get("pack_id")
+    user_id = meta.get("user_id")
+    ref     = tx.get("reference", "webhook")
+    pack    = COIN_PACKS.get(pack_id)
+
+    if pack and user_id:
+        db   = g.db
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.coins += pack["coins"]
+            log_transaction(db, user, +pack["coins"],
+                            f"paystack_webhook pack={pack_id} ref={ref} kes={pack['price_kes']}")
+            db.commit()
+
+    return "", 200
+
+
+# -----------------------------------
+# Routes: manual test top-up
+# -----------------------------------
+
+@app.route("/buy-coins", methods=["POST"])
+def buy_coins():
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Login required"}), 401
+
+    data   = request.get_json(silent=True) or {}
+    amount = data.get("amount")
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid amount"}), 400
+
+    if amount <= 0:
+        return jsonify({"error": "Amount must be positive"}), 400
+    if amount > 1000000:
+        return jsonify({"error": "Amount too large"}), 400
+
+    user.coins += amount
+    log_transaction(db, user, +amount, "manual_test_topup")
+    db.commit()
+    db.refresh(user)
+    return jsonify({"coins": user.coins})
+
+
+# -----------------------------------
+# Main
+# -----------------------------------
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -325,7 +325,6 @@ def chat():
 
 @app.route("/payment/init", methods=["POST"])
 def payment_init():
-    """Initialize a Paystack transaction and return the checkout URL."""
     db   = g.db
     user = get_current_user(db)
     if not user:
@@ -337,17 +336,21 @@ def payment_init():
     if not pack:
         return jsonify({"error": "Invalid pack"}), 400
 
-    # Decrypt email for Paystack (needed by their API)
+    if not PAYSTACK_SECRET_KEY:
+        print("ERROR: PAYSTACK_SECRET_KEY is not set")
+        return jsonify({"error": "PAYSTACK_SECRET_KEY not configured on server"}), 500
+
     try:
         email = user.email
-    except Exception:
+    except Exception as e:
+        print("ERROR reading user email:", repr(e))
         return jsonify({"error": "Could not read user email"}), 500
 
     reference = f"coins_{user.id}_{uuid.uuid4().hex[:12]}"
 
     payload = {
         "email":        email,
-        "amount":       pack["price_kes"] * 100,  # KES in kobo
+        "amount":       pack["price_kes"] * 100,
         "currency":     "KES",
         "reference":    reference,
         "callback_url": url_for("payment_callback", _external=True),
@@ -357,21 +360,37 @@ def payment_init():
         },
     }
 
-    r = http_requests.post(
-        "https://api.paystack.co/transaction/initialize",
-        json=payload,
-        headers=PAYSTACK_HEADERS(),
-        timeout=10,
-    )
+    print("Paystack payload:", payload)
 
-    resp_data = r.json()
+    try:
+        r = http_requests.post(
+            "https://api.paystack.co/transaction/initialize",
+            json=payload,
+            headers=PAYSTACK_HEADERS(),
+            timeout=10,
+        )
+        print("Paystack status:", r.status_code)
+        print("Paystack response:", r.text)
+    except Exception as e:
+        print("ERROR calling Paystack:", repr(e))
+        return jsonify({"error": f"Could not reach Paystack: {e}"}), 502
+
+    try:
+        resp_data = r.json()
+    except Exception:
+        print("ERROR: Paystack returned non-JSON:", r.text)
+        return jsonify({"error": "Paystack returned invalid response"}), 502
+
     if not resp_data.get("status"):
-        return jsonify({"error": resp_data.get("message", "Paystack error")}), 502
+        msg = resp_data.get("message", "Unknown Paystack error")
+        print("Paystack error message:", msg)
+        return jsonify({"error": msg}), 502
 
     return jsonify({
         "authorization_url": resp_data["data"]["authorization_url"],
         "reference":         reference,
     })
+
 
 
 @app.route("/payment/callback")

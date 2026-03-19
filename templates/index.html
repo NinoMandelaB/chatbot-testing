@@ -15,10 +15,12 @@
     #new-chat-btn:hover { background: #45475a; }
     #history-list { flex: 1; overflow-y: auto; padding: 0 6px; }
     .history-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.82rem;
-                    color: #bac2de; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                    color: #bac2de; margin-bottom: 2px; }
     .history-item:hover  { background: #313244; }
     .history-item.active { background: #45475a; color: #cdd6f4; }
+    .history-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .history-date { font-size: 0.7rem; color: #6c7086; margin-top: 1px; }
+    .history-delete { background: transparent; border: none; color: #f38ba8; cursor: pointer; font-size: 0.95rem; padding: 0 0 0 8px; }
 
     /* Main */
     #main { flex: 1; display: flex; flex-direction: column; max-width: 760px; margin: 0 auto; padding: 0 16px; width: 100%; }
@@ -30,14 +32,14 @@
     #packs button { padding: 5px 9px; font-size: 0.82rem; margin-right: 4px; margin-top: 4px; }
     #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px;
                 flex: 1; overflow-y: auto; margin-bottom: 12px; min-height: 0; }
-    .msg { margin: 8px 0; line-height: 1.5; }
+    .msg { margin: 8px 0; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
     .user  { color: #1a73e8; font-weight: bold; }
-    .bot   { color: #333; }
+    .bot   { color: #333; font-weight: bold; }
     #input-row { display: flex; gap: 8px; padding-bottom: 16px; }
     #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
     button { padding: 10px 18px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
     button:disabled { background: #aaa; cursor: not-allowed; }
-    .btn-danger    { background: #c0392b !important; }
+    .btn-danger { background: #c0392b !important; }
     .btn-danger:hover { background: #a93226 !important; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
@@ -48,6 +50,7 @@
     .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 420px; width: 90%; text-align: center; }
     .overlay-box h2 { margin-top: 0; font-size: 1.3rem; color: #333; }
     .overlay-box p  { color: #555; font-size: 0.95rem; line-height: 1.5; }
+    .overlay-box input { width: 100%; padding: 9px 10px; border: 1px solid #ddd; border-radius: 6px; margin-top: 8px; }
     .overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
     .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
     .btn-row a, .btn-row button { padding: 10px 22px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; cursor: pointer; border: none; }
@@ -60,7 +63,6 @@
 </head>
 <body>
 
-  <!-- Sidebar (logged-in only) -->
   {% if not is_guest %}
   <div id="sidebar">
     <div id="sidebar-header">💬 Conversations</div>
@@ -86,7 +88,7 @@
         <h2>🪙 You've run out of coins!</h2>
         <p>Top up your balance to keep chatting.</p>
         <div class="btn-row">
-          <button class="btn-primary"   onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small — KES 70</button>
+          <button class="btn-primary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small — KES 70</button>
           <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('regular')">Regular — KES 300</button>
           <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('heavy')">Heavy-use — KES 700</button>
         </div>
@@ -94,7 +96,7 @@
     </div>
   </div>
 
-  <!-- Delete overlay -->
+  <!-- Delete account overlay -->
   <div id="overlay-delete" class="overlay">
     <div class="overlay-box">
       <h2>⚠️ Delete account?</h2>
@@ -102,6 +104,20 @@
       <div class="btn-row">
         <button class="btn-danger btn-primary" onclick="confirmDelete()">Yes, delete everything</button>
         <button class="btn-secondary" onclick="document.getElementById('overlay-delete').classList.remove('show')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unlock history overlay -->
+  <div id="overlay-unlock" class="overlay">
+    <div class="overlay-box">
+      <h2>🔐 Unlock your history</h2>
+      <p>Enter your password to decrypt your chat history on this device. Your password never leaves the browser.</p>
+      <input id="unlock-username" type="text" placeholder="Username" value="{{ username if not is_guest else '' }}"/>
+      <input id="unlock-password" type="password" placeholder="Password"/>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="doUnlock()">Unlock</button>
+        <button class="btn-secondary" onclick="document.getElementById('overlay-unlock').classList.remove('show')">Cancel</button>
       </div>
     </div>
   </div>
@@ -118,7 +134,7 @@
           <a href="/register">Register</a>
           <a href="/login">Login</a>
         {% else %}
-          <a href="/logout">Logout</a>
+          <a href="/logout" onclick="sessionStorage.removeItem('dek')">Logout</a>
           <button class="btn-danger" style="padding:6px 12px;font-size:0.82rem;"
                   onclick="document.getElementById('overlay-delete').classList.add('show')">
             Delete account
@@ -159,6 +175,7 @@
     {% endif %}
 
     <div id="chat-box"></div>
+
     <div id="input-row">
       <input id="user-input" type="text" placeholder="Type a message…" autofocus/>
       <button id="send-btn" onclick="sendMessage()">Send</button>
@@ -166,12 +183,12 @@
   </div>
 
   <script>
-    // ── Constants ─────────────────────────────────────────────────────────────
     const IS_GUEST = {{ 'true' if is_guest else 'false' }};
-    let GUEST_ID   = null;
-    let currentSessionId = null;   // UUID grouping current conversation
+    const USERNAME = {{ (username|tojson) if not is_guest else '""' }};
+    let GUEST_ID = null;
+    let currentSessionId = null;
+    let sessionCache = {};
 
-    // ── Guest localStorage ID ─────────────────────────────────────────────────
     if (IS_GUEST) {
       GUEST_ID = localStorage.getItem("guest_id");
       if (!GUEST_ID) {
@@ -186,10 +203,12 @@
       }
     }
 
-    // ── E2EE helpers ──────────────────────────────────────────────────────────
     function hexToBytes(hex) {
-      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+      if (!hex) return new Uint8Array();
+      const parts = hex.match(/.{1,2}/g) || [];
+      return new Uint8Array(parts.map(b => parseInt(b, 16)));
     }
+
     function bytesToHex(bytes) {
       return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
     }
@@ -199,12 +218,22 @@
       return hex ? hexToBytes(hex) : null;
     }
 
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
     async function encryptText(plaintext) {
       const dek = getDek();
       if (!dek) return null;
+
       const key = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["encrypt"]);
-      const iv  = crypto.getRandomValues(new Uint8Array(12));
-      const ct  = await crypto.subtle.encrypt(
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv },
         key,
         new TextEncoder().encode(plaintext)
@@ -214,149 +243,385 @@
 
     async function decryptText(encHex) {
       const dek = getDek();
-      if (!dek) return "[encrypted — log in again to decrypt]";
-      const [ivHex, ctHex] = encHex.split(":");
+      if (!dek) return "[encrypted — unlock required]";
+      const [ivHex, ctHex] = String(encHex || "").split(":");
+      if (!ivHex || !ctHex) return "[invalid encrypted message]";
       try {
-        const key   = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["decrypt"]);
+        const key = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["decrypt"]);
         const plain = await crypto.subtle.decrypt(
           { name: "AES-GCM", iv: hexToBytes(ivHex) },
           key,
           hexToBytes(ctHex)
         );
         return new TextDecoder().decode(plain);
-      } catch(e) {
+      } catch (e) {
         return "[decryption failed]";
       }
     }
 
-    // ── DOM refs ──────────────────────────────────────────────────────────────
-    const chatBox         = document.getElementById("chat-box");
-    const input           = document.getElementById("user-input");
-    const btn             = document.getElementById("send-btn");
-    const overlayCoins    = document.getElementById("overlay-coins");
-    const overlayDelete   = document.getElementById("overlay-delete");
-    const coinsValueEl    = document.getElementById("coins-value");
-    const sumPromptEl     = document.getElementById("sum-prompt");
+    async function deriveKey(password, saltHex) {
+      const enc = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        enc.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      return crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: hexToBytes(saltHex),
+          iterations: 600000,
+          hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    async function aesDecryptToBytes(keyObj, encHex) {
+      const [ivHex, ctHex] = String(encHex || "").split(":");
+      if (!ivHex || !ctHex) throw new Error("Invalid encrypted payload");
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: hexToBytes(ivHex) },
+        keyObj,
+        hexToBytes(ctHex)
+      );
+      return new Uint8Array(plain);
+    }
+
+    async function doUnlock() {
+      const username = document.getElementById("unlock-username").value.trim();
+      const password = document.getElementById("unlock-password").value;
+
+      if (!username || !password) {
+        alert("Username and password are required.");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/kdf-params", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+
+        const data = await res.json();
+        if (!data.salt || !data.encrypted_dek) {
+          alert("Could not fetch encryption parameters.");
+          return;
+        }
+
+        const key = await deriveKey(password, data.salt);
+        const dekBytes = await aesDecryptToBytes(key, data.encrypted_dek);
+
+        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+        document.getElementById("unlock-password").value = "";
+        document.getElementById("overlay-unlock").classList.remove("show");
+
+        await loadHistory();
+      } catch (err) {
+        alert("Unlock error: " + err.message);
+      }
+    }
+
+    const chatBox = document.getElementById("chat-box");
+    const input = document.getElementById("user-input");
+    const btn = document.getElementById("send-btn");
+    const overlayCoins = document.getElementById("overlay-coins");
+    const overlayDelete = document.getElementById("overlay-delete");
+    const coinsValueEl = document.getElementById("coins-value");
+    const sumPromptEl = document.getElementById("sum-prompt");
     const sumCompletionEl = document.getElementById("sum-completion");
-    const sumTotalEl      = document.getElementById("sum-total");
+    const sumTotalEl = document.getElementById("sum-total");
 
     let sumPrompt = 0, sumCompletion = 0, sumTotal = 0;
 
-    function getCoins() { return parseInt(coinsValueEl.textContent || "0", 10); }
+    function getCoins() {
+      return parseInt(coinsValueEl.textContent || "0", 10);
+    }
 
     function setCoins(v) {
       coinsValueEl.textContent = v;
       const noCoins = v <= 0;
-      btn.disabled   = noCoins;
+      btn.disabled = noCoins;
       input.disabled = noCoins;
       if (noCoins) overlayCoins.classList.add("show");
-      else         overlayCoins.classList.remove("show");
+      else overlayCoins.classList.remove("show");
     }
+
     setCoins(getCoins());
 
-    input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") sendMessage();
+    });
 
     function appendMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg";
-      div.innerHTML = `<span class="${role === 'user' ? 'user' : 'bot'}">${role === "user" ? "You" : "Agent"}:</span> ${text}`;
+
+      const label = document.createElement("span");
+      label.className = role === "user" ? "user" : "bot";
+      label.textContent = role === "user" ? "You: " : "Agent: ";
+
+      div.appendChild(label);
+      div.appendChild(document.createTextNode(text));
       chatBox.appendChild(div);
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
     function updateTokenSummary(usage) {
       if (!usage) return;
-      const p = typeof usage.prompt_tokens     === "number" ? usage.prompt_tokens     : 0;
+      const p = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0;
       const c = typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0;
-      const t = typeof usage.total_tokens      === "number" ? usage.total_tokens      : 0;
-      sumPrompt += p; sumCompletion += c; sumTotal += t;
-      sumPromptEl.textContent     = sumPrompt;
+      const t = typeof usage.total_tokens === "number" ? usage.total_tokens : 0;
+      sumPrompt += p;
+      sumCompletion += c;
+      sumTotal += t;
+      sumPromptEl.textContent = sumPrompt;
       sumCompletionEl.textContent = sumCompletion;
-      sumTotalEl.textContent      = sumTotal;
+      sumTotalEl.textContent = sumTotal;
     }
 
-    // ── New chat session ──────────────────────────────────────────────────────
     function startNewChat() {
-      currentSessionId  = crypto.randomUUID();
+      currentSessionId = crypto.randomUUID();
       chatBox.innerHTML = "";
-      input.focus();
-      // deselect sidebar
       document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      input.focus();
     }
 
-    // ── Load history ──────────────────────────────────────────────────────────
+    function ensureSessionCache(sid) {
+      if (!sessionCache[sid]) {
+        sessionCache[sid] = {
+          sid,
+          created_at: new Date().toISOString(),
+          messages: [],
+        };
+      }
+      return sessionCache[sid];
+    }
+
+    function buildHistoryItem(sid, preview, createdAt) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      item.dataset.sid = sid;
+
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.justifyContent = "space-between";
+      row.style.alignItems = "flex-start";
+      row.style.gap = "8px";
+
+      const left = document.createElement("div");
+      left.style.minWidth = "0";
+      left.style.flex = "1";
+
+      const title = document.createElement("div");
+      title.className = "history-title";
+      title.textContent = preview || "Chat";
+
+      const date = document.createElement("div");
+      date.className = "history-date";
+      date.textContent = new Date(createdAt).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric"
+      });
+
+      left.appendChild(title);
+      left.appendChild(date);
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "history-delete";
+      del.textContent = "✕";
+      del.title = "Delete chat";
+      del.onclick = async (event) => {
+        event.stopPropagation();
+        await deleteSession(sid);
+      };
+
+      row.appendChild(left);
+      row.appendChild(del);
+      item.appendChild(row);
+
+      item.onclick = () => restoreSession(sid, item);
+      return item;
+    }
+
     async function loadHistory() {
       if (IS_GUEST) return;
-      try {
-        const res  = await fetch("/api/messages");
-        const msgs = await res.json();
-        if (!Array.isArray(msgs)) return;
 
-        // Group by chat_session_id, keep latest message per session as preview
-        const sessions = {};
-        for (const m of msgs) {
-          const sid = m.chat_session_id || "legacy";
-          if (!sessions[sid]) sessions[sid] = { sid, messages: [], created_at: m.created_at };
-          sessions[sid].messages.push(m);
-        }
+      if (!getDek()) {
+        const overlay = document.getElementById("overlay-unlock");
+        const usernameEl = document.getElementById("unlock-username");
+        if (usernameEl && !usernameEl.value) usernameEl.value = USERNAME || "";
+        overlay.classList.add("show");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/messages");
+        const msgs = await res.json();
 
         const list = document.getElementById("history-list");
         list.innerHTML = "";
+        sessionCache = {};
 
-        const sorted = Object.values(sessions).sort(
+        if (!Array.isArray(msgs) || msgs.length === 0) {
+          startNewChat();
+          return;
+        }
+
+        for (const m of msgs) {
+          const sid = m.chat_session_id || "legacy";
+          ensureSessionCache(sid);
+          sessionCache[sid].messages.push(m);
+          if (!sessionCache[sid].created_at) {
+            sessionCache[sid].created_at = m.created_at;
+          }
+        }
+
+        const sorted = Object.values(sessionCache).sort(
           (a, b) => new Date(b.created_at) - new Date(a.created_at)
         );
 
         for (const s of sorted) {
-          const item = document.createElement("div");
-          item.className   = "history-item";
-          item.dataset.sid = s.sid;
-
-          // Decrypt first user message for preview label
           const firstUser = s.messages.find(m => m.role === "user");
-          const preview   = firstUser
-            ? await decryptText(firstUser.content_enc).then(t => t.slice(0, 38) + (t.length > 38 ? "…" : ""))
-            : "Chat";
-
-          const date = new Date(s.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-          item.innerHTML = `${preview}<div class="history-date">${date}</div>`;
-          item.onclick   = () => restoreSession(s.sid, s.messages, item);
-          list.appendChild(item);
+          let preview = "Chat";
+          if (firstUser) {
+            const plain = await decryptText(firstUser.content_enc);
+            preview = plain.slice(0, 38) + (plain.length > 38 ? "…" : "");
+          }
+          list.appendChild(buildHistoryItem(s.sid, preview, s.created_at));
         }
 
-        // Start a fresh session by default
         startNewChat();
-
-      } catch(e) {
+      } catch (e) {
         console.error("History load error:", e);
-        document.getElementById("loading-history").textContent = "Could not load history.";
+        const loading = document.getElementById("loading-history");
+        if (loading) loading.textContent = "Could not load history.";
       }
     }
 
-    async function restoreSession(sid, messages, itemEl) {
-      currentSessionId  = sid;
+    async function restoreSession(sid, itemEl) {
+      currentSessionId = sid;
       chatBox.innerHTML = "";
 
       document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
       if (itemEl) itemEl.classList.add("active");
 
+      const data = sessionCache[sid];
+      const messages = data ? data.messages : [];
+
       for (const m of messages) {
         const plain = await decryptText(m.content_enc);
         appendMessage(m.role, plain);
       }
+
       input.focus();
     }
 
-    // ── Send message ──────────────────────────────────────────────────────────
+    async function saveEncryptedMessage(role, content_enc) {
+      try {
+        const res = await fetch("/api/save-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role,
+            content_enc,
+            chat_session_id: currentSessionId,
+          }),
+        });
+
+        if (!res.ok) return false;
+
+        const entry = ensureSessionCache(currentSessionId);
+        entry.messages.push({
+          role,
+          content_enc,
+          chat_session_id: currentSessionId,
+          created_at: new Date().toISOString(),
+        });
+        return true;
+      } catch (e) {
+        console.warn("Could not save message:", e);
+        return false;
+      }
+    }
+
+    function refreshHistoryItem(sid, previewText) {
+      const list = document.getElementById("history-list");
+      if (!list) return;
+
+      const entry = ensureSessionCache(sid);
+      let item = list.querySelector(`[data-sid="${sid}"]`);
+      const preview = previewText.slice(0, 38) + (previewText.length > 38 ? "…" : "");
+
+      if (!item) {
+        item = buildHistoryItem(sid, preview, entry.created_at);
+        list.prepend(item);
+      } else {
+        const titleEl = item.querySelector(".history-title");
+        const dateEl = item.querySelector(".history-date");
+        if (titleEl) titleEl.textContent = preview;
+        if (dateEl) {
+          dateEl.textContent = new Date(entry.created_at).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric"
+          });
+        }
+        list.prepend(item);
+      }
+
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      item.classList.add("active");
+      item.onclick = () => restoreSession(sid, item);
+    }
+
+    async function deleteSession(sid) {
+      if (!confirm("Delete this chat and all its messages?")) return;
+
+      try {
+        const res = await fetch("/api/delete-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_session_id: sid }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          alert("Error: " + (data.error || "Could not delete chat."));
+          return;
+        }
+
+        delete sessionCache[sid];
+
+        const item = document.querySelector(`.history-item[data-sid="${sid}"]`);
+        if (item) item.remove();
+
+        if (currentSessionId === sid) {
+          startNewChat();
+        }
+      } catch (err) {
+        alert("Error: " + err.message);
+      }
+    }
+
     async function sendMessage() {
       const msg = input.value.trim();
       if (!msg) return;
-      if (getCoins() <= 0) { overlayCoins.classList.add("show"); return; }
+      if (getCoins() <= 0) {
+        overlayCoins.classList.add("show");
+        return;
+      }
 
-      // Ensure we have a session ID
       if (!currentSessionId) currentSessionId = crypto.randomUUID();
 
-      input.value  = "";
+      input.value = "";
       btn.disabled = true;
       appendMessage("user", msg);
 
@@ -371,8 +636,14 @@
         });
 
         let data;
-        try { data = await res.json(); }
-        catch(e) { appendMessage("bot", "Error: unexpected server response."); btn.disabled = false; input.focus(); return; }
+        try {
+          data = await res.json();
+        } catch (e) {
+          appendMessage("bot", "Error: unexpected server response.");
+          btn.disabled = false;
+          input.focus();
+          return;
+        }
 
         if (res.status === 403 && data.error === "no_coins") {
           setCoins(0);
@@ -383,93 +654,89 @@
           updateTokenSummary(data.usage);
           if (typeof data.coins === "number") setCoins(data.coins);
 
-          // Encrypt and save both messages to DB (logged-in only)
           if (!IS_GUEST && getDek()) {
-            const userEnc  = await encryptText(msg);
+            const userEnc = await encryptText(msg);
             const agentEnc = await encryptText(data.reply || "");
-            if (userEnc)  await saveEncryptedMessage("user",  userEnc);
+            if (userEnc) await saveEncryptedMessage("user", userEnc);
             if (agentEnc) await saveEncryptedMessage("agent", agentEnc);
-
-            // Refresh sidebar preview for this session
             refreshHistoryItem(currentSessionId, msg);
           }
         }
-      } catch(err) { appendMessage("bot", "Error: " + err.message); }
+      } catch (err) {
+        appendMessage("bot", "Error: " + err.message);
+      }
 
-      btn.disabled   = getCoins() <= 0;
+      btn.disabled = getCoins() <= 0;
       input.disabled = getCoins() <= 0;
       input.focus();
     }
 
-    async function saveEncryptedMessage(role, content_enc) {
-      try {
-        await fetch("/api/save-message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role, content_enc, chat_session_id: currentSessionId }),
-        });
-      } catch(e) { console.warn("Could not save message:", e); }
-    }
-
-    function refreshHistoryItem(sid, previewText) {
-      const list    = document.getElementById("history-list");
-      if (!list) return;
-      let   item    = list.querySelector(`[data-sid="${sid}"]`);
-      const preview = previewText.slice(0, 38) + (previewText.length > 38 ? "…" : "");
-      const date    = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
-
-      if (!item) {
-        item             = document.createElement("div");
-        item.className   = "history-item active";
-        item.dataset.sid = sid;
-        item.onclick     = () => restoreSession(sid, [], item);
-        list.prepend(item);
-        document.querySelectorAll(".history-item").forEach(el => el !== item && el.classList.remove("active"));
-      }
-      item.innerHTML = `${preview}<div class="history-date">${date}</div>`;
-    }
-
-    // ── Coins / payment ───────────────────────────────────────────────────────
     async function buyCoins() {
       const buyAmountEl = document.getElementById("buy-amount");
       const amount = parseInt((buyAmountEl.value || "").trim(), 10);
-      if (!amount || amount <= 0) { appendMessage("bot", "Enter a positive amount."); return; }
+
+      if (!amount || amount <= 0) {
+        appendMessage("bot", "Enter a positive amount.");
+        return;
+      }
+
       document.getElementById("buy-btn").disabled = true;
       try {
-        const res  = await fetch("/buy-coins", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
+        const res = await fetch("/buy-coins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount }),
+        });
         const data = await res.json();
-        if (!res.ok) appendMessage("bot", `Error: ${data.error}`);
-        else { setCoins(data.coins); appendMessage("bot", `Added ${amount} coins. Balance: ${data.coins}.`); buyAmountEl.value = ""; }
-      } catch(err) { appendMessage("bot", "Error: " + err.message); }
+
+        if (!res.ok) {
+          appendMessage("bot", `Error: ${data.error}`);
+        } else {
+          setCoins(data.coins);
+          appendMessage("bot", `Added ${amount} coins. Balance: ${data.coins}.`);
+          buyAmountEl.value = "";
+        }
+      } catch (err) {
+        appendMessage("bot", "Error: " + err.message);
+      }
       document.getElementById("buy-btn").disabled = false;
     }
 
     async function payPack(packId) {
       try {
-        const res  = await fetch("/payment/init", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pack: packId}) });
+        const res = await fetch("/payment/init", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pack: packId }),
+        });
         const data = await res.json();
-        if (!res.ok) { appendMessage("bot", `Payment error: ${data.error}`); return; }
+        if (!res.ok) {
+          appendMessage("bot", `Payment error: ${data.error}`);
+          return;
+        }
         window.location.href = data.authorization_url;
-      } catch(err) { appendMessage("bot", "Payment error: " + err.message); }
+      } catch (err) {
+        appendMessage("bot", "Payment error: " + err.message);
+      }
     }
 
-    // ── Delete account ────────────────────────────────────────────────────────
     async function confirmDelete() {
       try {
         const res = await fetch("/delete-account", { method: "POST" });
-        if (res.ok) { window.location.href = "/register"; }
-        else {
+        if (res.ok) {
+          sessionStorage.removeItem("dek");
+          window.location.href = "/register";
+        } else {
           const data = await res.json();
           alert("Error: " + (data.error || "Could not delete account."));
           overlayDelete.classList.remove("show");
         }
-      } catch(err) {
+      } catch (err) {
         alert("Error: " + err.message);
         overlayDelete.classList.remove("show");
       }
     }
 
-    // ── Init ──────────────────────────────────────────────────────────────────
     if (!IS_GUEST) {
       loadHistory();
     } else {

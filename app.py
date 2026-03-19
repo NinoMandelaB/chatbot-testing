@@ -65,10 +65,10 @@ def get_redis():
         _redis_client = redis_lib.from_url(url, decode_responses=True)
     return _redis_client
 
-def redis_guest_key(guest_id): return f"guest_coins:{guest_id}"
+def redis_guest_key(gid):  return f"guest_coins:{gid}"
 
-def get_guest_coins_redis(guest_id):
-    r, key = get_redis(), redis_guest_key(guest_id)
+def get_guest_coins_redis(gid):
+    r, key = get_redis(), redis_guest_key(gid)
     val    = r.get(key)
     if val is None:
         r.setex(key, GUEST_TTL, GUEST_INITIAL_COINS)
@@ -76,9 +76,8 @@ def get_guest_coins_redis(guest_id):
     r.expire(key, GUEST_TTL)
     return int(val)
 
-def set_guest_coins_redis(guest_id, coins):
-    r = get_redis()
-    r.setex(redis_guest_key(guest_id), GUEST_TTL, max(0, coins))
+def set_guest_coins_redis(gid, coins):
+    get_redis().setex(redis_guest_key(gid), GUEST_TTL, max(0, coins))
 
 # -----------------------------------
 # DB session per request
@@ -102,12 +101,19 @@ def get_mistral_client():
     return Mistral(api_key=MISTRAL_API_KEY)
 
 def get_current_user(db):
-    user_id = session.get("user_id")
-    if not user_id:
+    uid = session.get("user_id")
+    if not uid:
         return None
-    return db.query(User).filter(User.id == user_id).first()
+    return db.query(User).filter(User.id == uid).first()
 
-def log_transaction(db, user, delta, reason):
+def log_transaction(db, user, delta: int, reason: str):
+    """
+    Write one auditable row to coin_transactions.
+    Encrypted with the SERVER master key — readable by business owner,
+    NOT by the user's E2EE DEK.
+    delta > 0 = credit, delta < 0 = debit.
+    Caller must db.commit() after calling this.
+    """
     tx        = CoinTransaction(user_id=user.id)
     tx.delta  = delta
     tx.reason = reason
@@ -127,7 +133,6 @@ def register():
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm", "")
 
-        # E2EE fields from JS (generated in browser before form submit)
         kdf_salt               = request.form.get("kdf_salt", "").strip()
         encrypted_dek          = request.form.get("encrypted_dek", "").strip()
         recovery_encrypted_dek = request.form.get("recovery_encrypted_dek", "").strip()
@@ -143,19 +148,17 @@ def register():
             errors.append("Encryption setup failed — please try again.")
 
         if errors:
-            return render_template(
-                "register.html", errors=errors,
-                username=username, email=email, gender=gender,
-                registered_coins=REGISTERED_INITIAL_COINS,
-            )
+            return render_template("register.html", errors=errors,
+                                   username=username, email=email, gender=gender,
+                                   registered_coins=REGISTERED_INITIAL_COINS)
 
-        user                          = User(username=username, password_hash=generate_password_hash(password))
-        user.email                    = email
-        user.gender                   = gender
-        user.coins                    = REGISTERED_INITIAL_COINS
-        user.kdf_salt                 = kdf_salt
-        user.encrypted_dek            = encrypted_dek
-        user.recovery_encrypted_dek   = recovery_encrypted_dek
+        user                        = User(username=username, password_hash=generate_password_hash(password))
+        user.email                  = email
+        user.gender                 = gender
+        user.coins                  = REGISTERED_INITIAL_COINS
+        user.kdf_salt               = kdf_salt
+        user.encrypted_dek          = encrypted_dek
+        user.recovery_encrypted_dek = recovery_encrypted_dek
         db.add(user)
         db.flush()
 
@@ -168,8 +171,7 @@ def register():
         resp.delete_cookie(GUEST_COOKIE)
         return resp
 
-    return render_template("register.html", errors=[],
-                           registered_coins=REGISTERED_INITIAL_COINS)
+    return render_template("register.html", errors=[], registered_coins=REGISTERED_INITIAL_COINS)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -181,9 +183,7 @@ def login():
 
         user = db.query(User).filter(User.username == username).first()
         if not user or not check_password_hash(user.password_hash, password):
-            return render_template("login.html",
-                                   error="Invalid username or password.",
-                                   username=username)
+            return render_template("login.html", error="Invalid username or password.", username=username)
 
         session["user_id"] = str(user.id)
         resp = make_response(redirect(url_for("index")))
@@ -197,73 +197,6 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
-
-
-# -----------------------------------
-# E2EE: key bootstrap endpoints
-# -----------------------------------
-
-@app.route("/api/kdf-params", methods=["POST"])
-def kdf_params():
-    """
-    Called by the login page BEFORE password is submitted,
-    so JS can derive the key client-side.
-    Also used during recovery flow.
-    """
-    data     = request.get_json(silent=True) or {}
-    username = (data.get("username") or "").strip()
-    db       = g.db
-    user     = db.query(User).filter(User.username == username).first()
-    if not user:
-        # Return fake data to prevent username enumeration
-        return jsonify({"salt": "0" * 32, "encrypted_dek": "", "recovery_encrypted_dek": ""})
-    return jsonify({
-        "salt":                   user.kdf_salt,
-        "encrypted_dek":          user.encrypted_dek,
-        "recovery_encrypted_dek": user.recovery_encrypted_dek,
-    })
-
-
-@app.route("/api/save-message", methods=["POST"])
-def save_message():
-    """Store a browser-encrypted message (ciphertext only — server is blind)."""
-    db   = g.db
-    user = get_current_user(db)
-    if not user:
-        return jsonify({"error": "Not authenticated"}), 401
-
-    data         = request.get_json(silent=True) or {}
-    role         = data.get("role", "")
-    content_enc  = data.get("content_enc", "")   # hex ciphertext from browser
-
-    if role not in ("user", "agent") or not content_enc:
-        return jsonify({"error": "Invalid payload"}), 400
-
-    msg             = ChatMessage(user_id=user.id, role=role)
-    msg.content_enc = content_enc          # stored as-is, server cannot read it
-    db.add(msg)
-    db.commit()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/messages")
-def get_messages():
-    """Return encrypted message blobs — client decrypts them."""
-    db   = g.db
-    user = get_current_user(db)
-    if not user:
-        return jsonify({"error": "Not authenticated"}), 401
-
-    msgs = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.user_id == user.id)
-        .order_by(ChatMessage.created_at)
-        .all()
-    )
-    return jsonify([
-        {"role": m.role, "content_enc": m.content_enc, "created_at": m.created_at.isoformat()}
-        for m in msgs
-    ])
 
 
 # -----------------------------------
@@ -294,6 +227,85 @@ def delete_account():
 
 
 # -----------------------------------
+# E2EE key bootstrap
+# -----------------------------------
+
+@app.route("/api/kdf-params", methods=["POST"])
+def kdf_params():
+    data     = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    db       = g.db
+    user     = db.query(User).filter(User.username == username).first()
+    if not user:
+        return jsonify({"salt": "0" * 32, "encrypted_dek": "", "recovery_encrypted_dek": ""})
+    return jsonify({
+        "salt":                   user.kdf_salt,
+        "encrypted_dek":          user.encrypted_dek,
+        "recovery_encrypted_dek": user.recovery_encrypted_dek,
+    })
+
+
+# -----------------------------------
+# Chat message storage (E2EE)
+# -----------------------------------
+
+@app.route("/api/save-message", methods=["POST"])
+def save_message():
+    """
+    Store a single browser-encrypted message.
+    content_enc = hex string: iv:ciphertext — opaque to the server.
+    chat_session_id groups messages into one conversation.
+    """
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data            = request.get_json(silent=True) or {}
+    role            = data.get("role", "")
+    content_enc     = data.get("content_enc", "")
+    chat_session_id = data.get("chat_session_id", "")
+
+    if role not in ("user", "agent") or not content_enc:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    msg                 = ChatMessage(user_id=user.id, role=role)
+    msg.content_enc     = content_enc
+    msg.chat_session_id = chat_session_id   # groups messages by conversation
+    db.add(msg)
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/messages")
+def get_messages():
+    """
+    Return all encrypted message blobs for the logged-in user,
+    grouped by chat_session_id so the browser can show a history list.
+    """
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    msgs = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == user.id)
+        .order_by(ChatMessage.created_at)
+        .all()
+    )
+    return jsonify([
+        {
+            "role":            m.role,
+            "content_enc":     m.content_enc,
+            "chat_session_id": m.chat_session_id,
+            "created_at":      m.created_at.isoformat(),
+        }
+        for m in msgs
+    ])
+
+
+# -----------------------------------
 # Routes: main
 # -----------------------------------
 
@@ -312,18 +324,14 @@ def index():
     guest_id = request.args.get("guest_id", "")
     if not guest_id:
         return render_template("index.html",
-                               username="Guest",
-                               coins=GUEST_INITIAL_COINS,
-                               is_guest=True,
-                               paystack_public_key=PAYSTACK_PUBLIC_KEY,
+                               username="Guest", coins=GUEST_INITIAL_COINS,
+                               is_guest=True, paystack_public_key=PAYSTACK_PUBLIC_KEY,
                                guest_id="")
 
     coins = get_guest_coins_redis(guest_id)
     return render_template("index.html",
-                           username="Guest",
-                           coins=coins,
-                           is_guest=True,
-                           paystack_public_key=PAYSTACK_PUBLIC_KEY,
+                           username="Guest", coins=coins,
+                           is_guest=True, paystack_public_key=PAYSTACK_PUBLIC_KEY,
                            guest_id=guest_id)
 
 
@@ -332,9 +340,7 @@ def chat():
     db       = g.db
     user     = get_current_user(db)
     is_guest = user is None
-
     data     = request.get_json(silent=True) or {}
-    guest_id = None
 
     if is_guest:
         guest_id = data.get("guest_id", "")
@@ -345,9 +351,6 @@ def chat():
         if user.coins <= 0:
             return jsonify({"error": "no_coins"}), 403
 
-    # For logged-in users the browser sends the ENCRYPTED user message
-    # and we forward the PLAINTEXT to Mistral (we have to — the AI needs to read it).
-    # What we store server-side afterwards is only the re-encrypted ciphertext via /api/save-message.
     user_message = data.get("message", "")
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
@@ -384,9 +387,13 @@ def chat():
             current_coins = max(0, coins - cost)
             set_guest_coins_redis(guest_id, current_coins)
         else:
-            current_coins = max(0, user.coins - cost)
-            user.coins    = current_coins
-            log_transaction(db, user, -cost, f"chat_message tokens={total_tokens}")
+            current_coins  = max(0, user.coins - cost)
+            user.coins     = current_coins
+            # Log the debit — committed here so it's never lost
+            log_transaction(
+                db, user, -cost,
+                f"chat tokens={total_tokens} prompt={prompt_tokens} completion={completion_tokens}"
+            )
             db.commit()
             db.refresh(user)
 
@@ -436,8 +443,8 @@ def payment_init():
     }
 
     try:
-        r = http_requests.post("https://api.paystack.co/transaction/initialize",
-                               json=payload, headers=PAYSTACK_HEADERS(), timeout=10)
+        r         = http_requests.post("https://api.paystack.co/transaction/initialize",
+                                       json=payload, headers=PAYSTACK_HEADERS(), timeout=10)
         resp_data = r.json()
     except Exception as e:
         return jsonify({"error": f"Could not reach Paystack: {e}"}), 502
@@ -473,8 +480,10 @@ def payment_callback():
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             user.coins += pack["coins"]
-            log_transaction(db, user, +pack["coins"],
-                            f"paystack_purchase pack={pack_id} ref={reference} kes={pack['price_kes']}")
+            log_transaction(
+                db, user, +pack["coins"],
+                f"paystack_purchase pack={pack_id} ref={reference} kes={pack['price_kes']}"
+            )
             db.commit()
 
     return redirect(url_for("index") + "?payment=success")
@@ -503,8 +512,10 @@ def payment_webhook():
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             user.coins += pack["coins"]
-            log_transaction(db, user, +pack["coins"],
-                            f"paystack_webhook pack={pack_id} ref={tx.get('reference','webhook')} kes={pack['price_kes']}")
+            log_transaction(
+                db, user, +pack["coins"],
+                f"paystack_webhook pack={pack_id} ref={tx.get('reference','webhook')} kes={pack['price_kes']}"
+            )
             db.commit()
 
     return "", 200
@@ -524,7 +535,7 @@ def buy_coins():
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid amount"}), 400
 
-    if amount <= 0:     return jsonify({"error": "Amount must be positive"}), 400
+    if amount <= 0:      return jsonify({"error": "Amount must be positive"}), 400
     if amount > 1000000: return jsonify({"error": "Amount too large"}), 400
 
     user.coins += amount
@@ -533,6 +544,11 @@ def buy_coins():
     db.refresh(user)
     return jsonify({"coins": user.coins})
 
+
+# -----------------------------------
+# Routes: recovery
+# -----------------------------------
+
 @app.route("/recover")
 def recover():
     return render_template("recover.html")
@@ -540,10 +556,6 @@ def recover():
 
 @app.route("/api/reset-password", methods=["POST"])
 def reset_password():
-    """
-    Called from the recovery page after the browser has re-encrypted the DEK
-    with the new password-derived key. Server only stores hashes + ciphertext.
-    """
     db   = g.db
     data = request.get_json(silent=True) or {}
 
@@ -562,11 +574,8 @@ def reset_password():
     user.password_hash = generate_password_hash(new_password)
     user.kdf_salt      = kdf_salt
     user.encrypted_dek = encrypted_dek
-    # recovery_encrypted_dek stays unchanged — same DEK, same recovery key
     db.commit()
-
     return jsonify({"ok": True})
-
 
 
 if __name__ == "__main__":

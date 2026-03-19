@@ -4,6 +4,8 @@ import hmac
 import hashlib
 import requests as http_requests
 
+import redis as redis_lib
+
 from flask import (
     Flask,
     render_template,
@@ -37,6 +39,7 @@ PAYSTACK_PUBLIC_KEY = os.environ.get("PAYSTACK_PUBLIC_KEY", "")
 GUEST_INITIAL_COINS      = 5000
 REGISTERED_INITIAL_COINS = 15000
 GUEST_COOKIE             = "guest_token"
+GUEST_TTL                = 60 * 60 * 24 * 30  # 30 days in seconds
 
 COIN_PACKS = {
     "small":   {"coins": 5000,  "price_kes": 70,  "label": "Small pack"},
@@ -48,6 +51,43 @@ PAYSTACK_HEADERS = lambda: {
     "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
     "Content-Type": "application/json",
 }
+
+# -----------------------------------
+# Redis setup (guest coins)
+# -----------------------------------
+
+_redis_client = None
+
+def get_redis():
+    global _redis_client
+    if _redis_client is None:
+        url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+        _redis_client = redis_lib.from_url(url, decode_responses=True)
+    return _redis_client
+
+
+def redis_guest_key(guest_id: str) -> str:
+    return f"guest_coins:{guest_id}"
+
+
+def get_guest_coins_redis(guest_id: str) -> int:
+    """Return current coin balance for guest_id, initialising to 5000 if new."""
+    r   = get_redis()
+    key = redis_guest_key(guest_id)
+    val = r.get(key)
+    if val is None:
+        # Brand-new guest — initialise and set TTL
+        r.setex(key, GUEST_TTL, GUEST_INITIAL_COINS)
+        return GUEST_INITIAL_COINS
+    # Refresh TTL on activity so active users don't expire
+    r.expire(key, GUEST_TTL)
+    return int(val)
+
+
+def set_guest_coins_redis(guest_id: str, coins: int):
+    r   = get_redis()
+    key = redis_guest_key(guest_id)
+    r.setex(key, GUEST_TTL, max(0, coins))
 
 
 # -----------------------------------
@@ -81,26 +121,7 @@ def get_current_user(db):
     return db.query(User).filter(User.id == user_id).first()
 
 
-def get_guest_coins():
-    token = request.cookies.get(GUEST_COOKIE)
-    if token:
-        coins = session.get(f"guest_coins_{token}")
-        if coins is None:
-            session[f"guest_coins_{token}"] = GUEST_INITIAL_COINS
-            return GUEST_INITIAL_COINS, token
-        return coins, False
-    else:
-        token = str(uuid.uuid4())
-        session[f"guest_coins_{token}"] = GUEST_INITIAL_COINS
-        return GUEST_INITIAL_COINS, token
-
-
-def set_guest_coins(token, coins):
-    session[f"guest_coins_{token}"] = coins
-
-
 def log_transaction(db, user, delta: int, reason: str):
-    """Write one row to coin_transactions. delta > 0 = credit, < 0 = debit."""
     tx        = CoinTransaction(user_id=user.id)
     tx.delta  = delta
     tx.reason = reason
@@ -141,17 +162,13 @@ def register():
         user.gender     = gender
         user.coins      = REGISTERED_INITIAL_COINS
         db.add(user)
-        db.flush()  # get user.id before logging
+        db.flush()
 
         log_transaction(db, user, +REGISTERED_INITIAL_COINS, "registration_bonus")
         db.commit()
         db.refresh(user)
 
         session["user_id"] = str(user.id)
-        token = request.cookies.get(GUEST_COOKIE)
-        if token:
-            session.pop(f"guest_coins_{token}", None)
-
         resp = make_response(redirect(url_for("index")))
         resp.delete_cookie(GUEST_COOKIE)
         return resp
@@ -174,10 +191,6 @@ def login():
                                    username=username)
 
         session["user_id"] = str(user.id)
-        token = request.cookies.get(GUEST_COOKIE)
-        if token:
-            session.pop(f"guest_coins_{token}", None)
-
         resp = make_response(redirect(url_for("index")))
         resp.delete_cookie(GUEST_COOKIE)
         return resp
@@ -203,7 +216,6 @@ def delete_account():
         return jsonify({"error": "Not authenticated"}), 401
 
     try:
-        # Must delete child rows before the user row (foreign key order)
         db.query(CoinTransaction).filter(CoinTransaction.user_id == user.id).delete(synchronize_session=False)
         db.query(ChatMessage).filter(ChatMessage.user_id == user.id).delete(synchronize_session=False)
         db.delete(user)
@@ -235,35 +247,46 @@ def index():
                                is_guest=False,
                                paystack_public_key=PAYSTACK_PUBLIC_KEY)
 
-    coins, new_token = get_guest_coins()
-    resp = make_response(render_template("index.html",
-                                         username="Guest",
-                                         coins=coins,
-                                         is_guest=True,
-                                         paystack_public_key=PAYSTACK_PUBLIC_KEY))
-    if new_token:
-        resp.set_cookie(GUEST_COOKIE, new_token,
-                        max_age=60 * 60 * 24 * 30,
-                        httponly=True, samesite="Lax")
-    return resp
+    # Guest — guest_id comes from JS (sent as query param on first load)
+    # On subsequent loads the JS sends it via the hidden field approach below
+    guest_id = request.args.get("guest_id", "")
+    if not guest_id:
+        # No guest_id yet — render page, JS will generate one and reload
+        return render_template("index.html",
+                               username="Guest",
+                               coins=GUEST_INITIAL_COINS,
+                               is_guest=True,
+                               paystack_public_key=PAYSTACK_PUBLIC_KEY,
+                               guest_id="")
+
+    coins = get_guest_coins_redis(guest_id)
+    return render_template("index.html",
+                           username="Guest",
+                           coins=coins,
+                           is_guest=True,
+                           paystack_public_key=PAYSTACK_PUBLIC_KEY,
+                           guest_id=guest_id)
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    db          = g.db
-    user        = get_current_user(db)
-    is_guest    = user is None
-    guest_token = request.cookies.get(GUEST_COOKIE) if is_guest else None
+    db       = g.db
+    user     = get_current_user(db)
+    is_guest = user is None
 
+    # For guests, guest_id comes in the JSON body
+    guest_id = None
     if is_guest:
-        coins = session.get(f"guest_coins_{guest_token}", 0) if guest_token else 0
+        data     = request.get_json(silent=True) or {}
+        guest_id = data.get("guest_id", "")
+        coins    = get_guest_coins_redis(guest_id) if guest_id else 0
         if coins <= 0:
             return jsonify({"error": "no_coins"}), 403
     else:
+        data = request.get_json(silent=True) or {}
         if user.coins <= 0:
             return jsonify({"error": "no_coins"}), 403
 
-    data         = request.get_json(silent=True) or {}
     user_message = data.get("message", "")
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
@@ -304,7 +327,7 @@ def chat():
 
         if is_guest:
             current_coins = max(0, coins - cost)
-            set_guest_coins(guest_token, current_coins)
+            set_guest_coins_redis(guest_id, current_coins)
         else:
             current_coins = max(0, user.coins - cost)
             user.coins    = current_coins
@@ -318,8 +341,8 @@ def chat():
             db.refresh(user)
 
         return jsonify({
-            "reply": reply,
-            "usage": {
+            "reply":    reply,
+            "usage":    {
                 "prompt_tokens":     prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens":      total_tokens,
@@ -351,13 +374,11 @@ def payment_init():
         return jsonify({"error": "Invalid pack"}), 400
 
     if not PAYSTACK_SECRET_KEY:
-        print("ERROR: PAYSTACK_SECRET_KEY is not set")
         return jsonify({"error": "PAYSTACK_SECRET_KEY not configured on server"}), 500
 
     try:
         email = user.email
     except Exception as e:
-        print("ERROR reading user email:", repr(e))
         return jsonify({"error": "Could not read user email"}), 500
 
     reference = f"coins_{user.id}_{uuid.uuid4().hex[:12]}"
@@ -374,31 +395,21 @@ def payment_init():
         },
     }
 
-    print("Paystack payload:", payload)
-
     try:
         r = http_requests.post(
             "https://api.paystack.co/transaction/initialize",
-            json=payload,
-            headers=PAYSTACK_HEADERS(),
-            timeout=10,
+            json=payload, headers=PAYSTACK_HEADERS(), timeout=10,
         )
-        print("Paystack status:", r.status_code)
-        print("Paystack response:", r.text)
     except Exception as e:
-        print("ERROR calling Paystack:", repr(e))
         return jsonify({"error": f"Could not reach Paystack: {e}"}), 502
 
     try:
         resp_data = r.json()
     except Exception:
-        print("ERROR: Paystack returned non-JSON:", r.text)
         return jsonify({"error": "Paystack returned invalid response"}), 502
 
     if not resp_data.get("status"):
-        msg = resp_data.get("message", "Unknown Paystack error")
-        print("Paystack error message:", msg)
-        return jsonify({"error": msg}), 502
+        return jsonify({"error": resp_data.get("message", "Unknown Paystack error")}), 502
 
     return jsonify({
         "authorization_url": resp_data["data"]["authorization_url"],
@@ -413,14 +424,12 @@ def payment_callback():
         return redirect(url_for("index"))
 
     try:
-        r = http_requests.get(
+        r         = http_requests.get(
             f"https://api.paystack.co/transaction/verify/{reference}",
-            headers=PAYSTACK_HEADERS(),
-            timeout=10,
+            headers=PAYSTACK_HEADERS(), timeout=10,
         )
         resp_data = r.json()
-    except Exception as e:
-        print("ERROR verifying Paystack payment:", repr(e))
+    except Exception:
         return redirect(url_for("index") + "?payment=failed")
 
     if not resp_data.get("status"):

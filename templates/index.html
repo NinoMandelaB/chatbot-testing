@@ -1,30 +1,48 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <title>Mistral Agent Chat</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; background: #f5f5f5; }
-    h1 { font-size: 1.4rem; color: #333; margin-bottom: 4px; }
-    #top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.95rem; }
-    #token-summary { font-size: 0.9rem; color: #555; margin-bottom: 8px; }
+    body { font-family: sans-serif; margin: 0; background: #f5f5f5; display: flex; height: 100vh; overflow: hidden; }
+
+    /* Sidebar */
+    #sidebar { width: 240px; min-width: 240px; background: #1e1e2e; color: #cdd6f4; display: flex; flex-direction: column; }
+    #sidebar-header { padding: 16px 14px 10px; font-size: 0.85rem; color: #a6adc8; text-transform: uppercase; letter-spacing: .06em; }
+    #new-chat-btn { margin: 0 10px 10px; padding: 9px; background: #313244; border: none; border-radius: 8px;
+                    color: #cdd6f4; cursor: pointer; font-size: 0.9rem; text-align: left; }
+    #new-chat-btn:hover { background: #45475a; }
+    #history-list { flex: 1; overflow-y: auto; padding: 0 6px; }
+    .history-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.82rem;
+                    color: #bac2de; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-item:hover  { background: #313244; }
+    .history-item.active { background: #45475a; color: #cdd6f4; }
+    .history-date { font-size: 0.7rem; color: #6c7086; margin-top: 1px; }
+
+    /* Main */
+    #main { flex: 1; display: flex; flex-direction: column; max-width: 760px; margin: 0 auto; padding: 0 16px; width: 100%; }
+    #top-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 0 6px; font-size: 0.95rem; }
+    #token-summary { font-size: 0.85rem; color: #666; margin-bottom: 6px; }
     #coins-bar { font-size: 0.9rem; color: #333; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     #coins-bar input { width: 80px; padding: 4px; border: 1px solid #ddd; border-radius: 4px; }
-    #packs { margin-bottom: 12px; font-size: 0.9rem; }
-    #packs button { padding: 6px 10px; font-size: 0.85rem; margin-right: 4px; margin-top: 4px; }
-    #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; height: 400px; overflow-y: auto; margin-bottom: 12px; }
-    .msg { margin: 8px 0; }
+    #packs { margin-bottom: 10px; font-size: 0.85rem; }
+    #packs button { padding: 5px 9px; font-size: 0.82rem; margin-right: 4px; margin-top: 4px; }
+    #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px;
+                flex: 1; overflow-y: auto; margin-bottom: 12px; min-height: 0; }
+    .msg { margin: 8px 0; line-height: 1.5; }
     .user  { color: #1a73e8; font-weight: bold; }
     .bot   { color: #333; }
-    #input-row { display: flex; gap: 8px; }
+    #input-row { display: flex; gap: 8px; padding-bottom: 16px; }
     #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
-    button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+    button { padding: 10px 18px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
     button:disabled { background: #aaa; cursor: not-allowed; }
-    .btn-danger { background: #c0392b !important; }
+    .btn-danger    { background: #c0392b !important; }
     .btn-danger:hover { background: #a93226 !important; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
+
+    /* Overlays */
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; justify-content: center; align-items: center; }
     .overlay.show { display: flex; }
     .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 420px; width: 90%; text-align: center; }
@@ -32,23 +50,34 @@
     .overlay-box p  { color: #555; font-size: 0.95rem; line-height: 1.5; }
     .overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
     .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
-    .btn-row a, .btn-row button { padding: 10px 24px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; cursor: pointer; border: none; }
+    .btn-row a, .btn-row button { padding: 10px 22px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; cursor: pointer; border: none; }
     .btn-primary   { background: #1a73e8; color: white !important; }
     .btn-secondary { background: #f0f0f0; color: #333 !important; border: 1px solid #ccc !important; }
-    .notice-success { background: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
-    .notice-error   { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    .notice-success { background: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 0.9rem; }
+    .notice-error   { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 0.9rem; }
+    #loading-history { font-size: 0.85rem; color: #888; padding: 8px 12px; }
   </style>
 </head>
 <body>
 
-  <!-- ① Zero-coins overlay -->
+  <!-- Sidebar (logged-in only) -->
+  {% if not is_guest %}
+  <div id="sidebar">
+    <div id="sidebar-header">💬 Conversations</div>
+    <button id="new-chat-btn" onclick="startNewChat()">＋ New chat</button>
+    <div id="history-list">
+      <div id="loading-history">Loading history…</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Zero-coins overlay -->
   <div id="overlay-coins" class="overlay">
     <div class="overlay-box">
       {% if is_guest %}
         <h2>🪙 You've used all your free coins!</h2>
         <p>Create a free account to keep chatting.</p>
         <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
-        <p style="font-size:0.85rem;color:#888;">Already have an account? Log in to restore your balance.</p>
         <div class="btn-row">
           <a href="/register" class="btn-primary">Register (free)</a>
           <a href="/login" class="btn-secondary">Login</a>
@@ -57,19 +86,19 @@
         <h2>🪙 You've run out of coins!</h2>
         <p>Top up your balance to keep chatting.</p>
         <div class="btn-row">
-          <button class="btn-primary"   onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small: 5,000 coins — KES 70</button>
-          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('regular')">Regular: 30,000 coins — KES 300</button>
-          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
+          <button class="btn-primary"   onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small — KES 70</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('regular')">Regular — KES 300</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('heavy')">Heavy-use — KES 700</button>
         </div>
       {% endif %}
     </div>
   </div>
 
-  <!-- ② Delete-account confirmation overlay -->
+  <!-- Delete overlay -->
   <div id="overlay-delete" class="overlay">
     <div class="overlay-box">
       <h2>⚠️ Delete account?</h2>
-      <p>This will permanently delete your account and <strong>all chat history and coins</strong>. This cannot be undone.</p>
+      <p>Permanently deletes your account, all chat history and coins. Cannot be undone.</p>
       <div class="btn-row">
         <button class="btn-danger btn-primary" onclick="confirmDelete()">Yes, delete everything</button>
         <button class="btn-secondary" onclick="document.getElementById('overlay-delete').classList.remove('show')">Cancel</button>
@@ -77,76 +106,78 @@
     </div>
   </div>
 
-  <div id="top-bar">
-    <div>
-      {% if is_guest %}Chatting as <strong>Guest</strong>
-      {% else %}Logged in as <strong>{{ username }}</strong>{% endif %}
+  <!-- Main area -->
+  <div id="main">
+    <div id="top-bar">
+      <div>
+        {% if is_guest %}Chatting as <strong>Guest</strong>
+        {% else %}Logged in as <strong>{{ username }}</strong>{% endif %}
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;">
+        {% if is_guest %}
+          <a href="/register">Register</a>
+          <a href="/login">Login</a>
+        {% else %}
+          <a href="/logout">Logout</a>
+          <button class="btn-danger" style="padding:6px 12px;font-size:0.82rem;"
+                  onclick="document.getElementById('overlay-delete').classList.add('show')">
+            Delete account
+          </button>
+        {% endif %}
+      </div>
     </div>
-    <div style="display:flex;gap:12px;align-items:center;">
-      {% if is_guest %}
-        <a href="/register">Register</a>
-        <a href="/login">Login</a>
-      {% else %}
-        <a href="/logout">Logout</a>
-        <button class="btn-danger" style="padding:6px 12px;font-size:0.85rem;"
-                onclick="document.getElementById('overlay-delete').classList.add('show')">
-          Delete account
-        </button>
+
+    <h1 style="font-size:1.3rem;color:#333;margin:0 0 6px;">🤖 Mistral Agent Chat</h1>
+
+    {% if request.args.get('payment') == 'success' %}
+      <div class="notice-success">✅ Payment successful! Coins credited.</div>
+    {% elif request.args.get('payment') == 'failed' %}
+      <div class="notice-error">❌ Payment failed. Please try again.</div>
+    {% endif %}
+
+    <div id="token-summary">
+      Tokens — prompt: <span id="sum-prompt">0</span>,
+      completion: <span id="sum-completion">0</span>,
+      total: <span id="sum-total">0</span>
+    </div>
+
+    <div id="coins-bar">
+      Coins: <strong id="coins-value">{{ coins }}</strong>
+      {% if not is_guest %}
+        <input id="buy-amount" type="number" min="1" placeholder="Amount (test)"/>
+        <button id="buy-btn" type="button" onclick="buyCoins()">Add coins (test)</button>
       {% endif %}
     </div>
-  </div>
 
-  <h1>🤖 Mistral Agent Chat</h1>
-
-  {% if request.args.get('payment') == 'success' %}
-    <div class="notice-success">✅ Payment successful! Your coins have been credited.</div>
-  {% elif request.args.get('payment') == 'failed' %}
-    <div class="notice-error">❌ Payment failed or was cancelled. Please try again.</div>
-  {% endif %}
-
-  <div id="token-summary">
-    Session tokens — prompt: <span id="sum-prompt">0</span>,
-    completion: <span id="sum-completion">0</span>,
-    total: <span id="sum-total">0</span>
-  </div>
-
-  <div id="coins-bar">
-    Coins: <strong id="coins-value">{{ coins }}</strong>
     {% if not is_guest %}
-      <input id="buy-amount" type="number" min="1" placeholder="Amount (test)" />
-      <button id="buy-btn" type="button" onclick="buyCoins()">Add coins (test)</button>
+    <div id="packs">
+      <strong>Buy via Paystack:</strong>
+      <button type="button" onclick="payPack('small')">5,000 — KES 70</button>
+      <button type="button" onclick="payPack('regular')">30,000 — KES 300</button>
+      <button type="button" onclick="payPack('heavy')">80,000 — KES 700</button>
+    </div>
     {% endif %}
-  </div>
 
-  {% if not is_guest %}
-  <div id="packs">
-    <strong>Buy coins via Paystack:</strong><br/>
-    <button type="button" onclick="payPack('small')">Small: 5,000 coins — KES 70</button>
-    <button type="button" onclick="payPack('regular')">Regular: 30,000 coins — KES 300</button>
-    <button type="button" onclick="payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
-  </div>
-  {% endif %}
-
-  <div id="chat-box"></div>
-  <div id="input-row">
-    <input id="user-input" type="text" placeholder="Type a message..." autofocus />
-    <button id="send-btn" onclick="sendMessage()">Send</button>
+    <div id="chat-box"></div>
+    <div id="input-row">
+      <input id="user-input" type="text" placeholder="Type a message…" autofocus/>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
   </div>
 
   <script>
-    // ─── Guest ID (localStorage — survives cookie clears) ───────────────────
+    // ── Constants ─────────────────────────────────────────────────────────────
     const IS_GUEST = {{ 'true' if is_guest else 'false' }};
     let GUEST_ID   = null;
+    let currentSessionId = null;   // UUID grouping current conversation
 
+    // ── Guest localStorage ID ─────────────────────────────────────────────────
     if (IS_GUEST) {
       GUEST_ID = localStorage.getItem("guest_id");
       if (!GUEST_ID) {
         GUEST_ID = crypto.randomUUID();
         localStorage.setItem("guest_id", GUEST_ID);
       }
-
-      // If the server rendered with no guest_id (first ever load),
-      // reload with the ID so the server can show the correct balance.
       const serverGuestId = "{{ guest_id }}";
       if (!serverGuestId && GUEST_ID) {
         const url = new URL(window.location.href);
@@ -155,7 +186,50 @@
       }
     }
 
-    // ─── DOM refs ────────────────────────────────────────────────────────────
+    // ── E2EE helpers ──────────────────────────────────────────────────────────
+    function hexToBytes(hex) {
+      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    }
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    function getDek() {
+      const hex = sessionStorage.getItem("dek");
+      return hex ? hexToBytes(hex) : null;
+    }
+
+    async function encryptText(plaintext) {
+      const dek = getDek();
+      if (!dek) return null;
+      const key = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["encrypt"]);
+      const iv  = crypto.getRandomValues(new Uint8Array(12));
+      const ct  = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        key,
+        new TextEncoder().encode(plaintext)
+      );
+      return bytesToHex(iv) + ":" + bytesToHex(new Uint8Array(ct));
+    }
+
+    async function decryptText(encHex) {
+      const dek = getDek();
+      if (!dek) return "[encrypted — log in again to decrypt]";
+      const [ivHex, ctHex] = encHex.split(":");
+      try {
+        const key   = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["decrypt"]);
+        const plain = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: hexToBytes(ivHex) },
+          key,
+          hexToBytes(ctHex)
+        );
+        return new TextDecoder().decode(plain);
+      } catch(e) {
+        return "[decryption failed]";
+      }
+    }
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
     const chatBox         = document.getElementById("chat-box");
     const input           = document.getElementById("user-input");
     const btn             = document.getElementById("send-btn");
@@ -170,26 +244,22 @@
 
     function getCoins() { return parseInt(coinsValueEl.textContent || "0", 10); }
 
-    function setCoins(value) {
-      coinsValueEl.textContent = value;
-      if (value <= 0) {
-        btn.disabled   = true;
-        input.disabled = true;
-        overlayCoins.classList.add("show");
-      } else {
-        btn.disabled   = false;
-        input.disabled = false;
-        overlayCoins.classList.remove("show");
-      }
+    function setCoins(v) {
+      coinsValueEl.textContent = v;
+      const noCoins = v <= 0;
+      btn.disabled   = noCoins;
+      input.disabled = noCoins;
+      if (noCoins) overlayCoins.classList.add("show");
+      else         overlayCoins.classList.remove("show");
     }
-
     setCoins(getCoins());
+
     input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
     function appendMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg";
-      div.innerHTML = `<span class="${role}">${role === "user" ? "You" : "Agent"}:</span> ${text}`;
+      div.innerHTML = `<span class="${role === 'user' ? 'user' : 'bot'}">${role === "user" ? "You" : "Agent"}:</span> ${text}`;
       chatBox.appendChild(div);
       chatBox.scrollTop = chatBox.scrollHeight;
     }
@@ -205,24 +275,99 @@
       sumTotalEl.textContent      = sumTotal;
     }
 
+    // ── New chat session ──────────────────────────────────────────────────────
+    function startNewChat() {
+      currentSessionId  = crypto.randomUUID();
+      chatBox.innerHTML = "";
+      input.focus();
+      // deselect sidebar
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+    }
+
+    // ── Load history ──────────────────────────────────────────────────────────
+    async function loadHistory() {
+      if (IS_GUEST) return;
+      try {
+        const res  = await fetch("/api/messages");
+        const msgs = await res.json();
+        if (!Array.isArray(msgs)) return;
+
+        // Group by chat_session_id, keep latest message per session as preview
+        const sessions = {};
+        for (const m of msgs) {
+          const sid = m.chat_session_id || "legacy";
+          if (!sessions[sid]) sessions[sid] = { sid, messages: [], created_at: m.created_at };
+          sessions[sid].messages.push(m);
+        }
+
+        const list = document.getElementById("history-list");
+        list.innerHTML = "";
+
+        const sorted = Object.values(sessions).sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+
+        for (const s of sorted) {
+          const item = document.createElement("div");
+          item.className   = "history-item";
+          item.dataset.sid = s.sid;
+
+          // Decrypt first user message for preview label
+          const firstUser = s.messages.find(m => m.role === "user");
+          const preview   = firstUser
+            ? await decryptText(firstUser.content_enc).then(t => t.slice(0, 38) + (t.length > 38 ? "…" : ""))
+            : "Chat";
+
+          const date = new Date(s.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+          item.innerHTML = `${preview}<div class="history-date">${date}</div>`;
+          item.onclick   = () => restoreSession(s.sid, s.messages, item);
+          list.appendChild(item);
+        }
+
+        // Start a fresh session by default
+        startNewChat();
+
+      } catch(e) {
+        console.error("History load error:", e);
+        document.getElementById("loading-history").textContent = "Could not load history.";
+      }
+    }
+
+    async function restoreSession(sid, messages, itemEl) {
+      currentSessionId  = sid;
+      chatBox.innerHTML = "";
+
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      if (itemEl) itemEl.classList.add("active");
+
+      for (const m of messages) {
+        const plain = await decryptText(m.content_enc);
+        appendMessage(m.role, plain);
+      }
+      input.focus();
+    }
+
+    // ── Send message ──────────────────────────────────────────────────────────
     async function sendMessage() {
       const msg = input.value.trim();
       if (!msg) return;
       if (getCoins() <= 0) { overlayCoins.classList.add("show"); return; }
 
+      // Ensure we have a session ID
+      if (!currentSessionId) currentSessionId = crypto.randomUUID();
+
       input.value  = "";
       btn.disabled = true;
       appendMessage("user", msg);
 
-      // Always include guest_id for guests so server looks up Redis
       const body = { message: msg };
       if (IS_GUEST && GUEST_ID) body.guest_id = GUEST_ID;
 
       try {
         const res = await fetch("/chat", {
-          method:  "POST",
+          method: "POST",
           headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify(body),
+          body: JSON.stringify(body),
         });
 
         let data;
@@ -237,6 +382,17 @@
           appendMessage("bot", data.reply || "No response");
           updateTokenSummary(data.usage);
           if (typeof data.coins === "number") setCoins(data.coins);
+
+          // Encrypt and save both messages to DB (logged-in only)
+          if (!IS_GUEST && getDek()) {
+            const userEnc  = await encryptText(msg);
+            const agentEnc = await encryptText(data.reply || "");
+            if (userEnc)  await saveEncryptedMessage("user",  userEnc);
+            if (agentEnc) await saveEncryptedMessage("agent", agentEnc);
+
+            // Refresh sidebar preview for this session
+            refreshHistoryItem(currentSessionId, msg);
+          }
         }
       } catch(err) { appendMessage("bot", "Error: " + err.message); }
 
@@ -245,38 +401,64 @@
       input.focus();
     }
 
+    async function saveEncryptedMessage(role, content_enc) {
+      try {
+        await fetch("/api/save-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role, content_enc, chat_session_id: currentSessionId }),
+        });
+      } catch(e) { console.warn("Could not save message:", e); }
+    }
+
+    function refreshHistoryItem(sid, previewText) {
+      const list    = document.getElementById("history-list");
+      if (!list) return;
+      let   item    = list.querySelector(`[data-sid="${sid}"]`);
+      const preview = previewText.slice(0, 38) + (previewText.length > 38 ? "…" : "");
+      const date    = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+      if (!item) {
+        item             = document.createElement("div");
+        item.className   = "history-item active";
+        item.dataset.sid = sid;
+        item.onclick     = () => restoreSession(sid, [], item);
+        list.prepend(item);
+        document.querySelectorAll(".history-item").forEach(el => el !== item && el.classList.remove("active"));
+      }
+      item.innerHTML = `${preview}<div class="history-date">${date}</div>`;
+    }
+
+    // ── Coins / payment ───────────────────────────────────────────────────────
     async function buyCoins() {
       const buyAmountEl = document.getElementById("buy-amount");
       const amount = parseInt((buyAmountEl.value || "").trim(), 10);
       if (!amount || amount <= 0) { appendMessage("bot", "Enter a positive amount."); return; }
       document.getElementById("buy-btn").disabled = true;
       try {
-        const res  = await fetch("/buy-coins", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
+        const res  = await fetch("/buy-coins", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
         const data = await res.json();
         if (!res.ok) appendMessage("bot", `Error: ${data.error}`);
-        else { setCoins(data.coins); appendMessage("bot", `Added ${amount} coins (test). Balance: ${data.coins}.`); buyAmountEl.value = ""; }
+        else { setCoins(data.coins); appendMessage("bot", `Added ${amount} coins. Balance: ${data.coins}.`); buyAmountEl.value = ""; }
       } catch(err) { appendMessage("bot", "Error: " + err.message); }
       document.getElementById("buy-btn").disabled = false;
     }
 
     async function payPack(packId) {
       try {
-        const res  = await fetch("/payment/init", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pack: packId }),
-        });
+        const res  = await fetch("/payment/init", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pack: packId}) });
         const data = await res.json();
         if (!res.ok) { appendMessage("bot", `Payment error: ${data.error}`); return; }
         window.location.href = data.authorization_url;
       } catch(err) { appendMessage("bot", "Payment error: " + err.message); }
     }
 
+    // ── Delete account ────────────────────────────────────────────────────────
     async function confirmDelete() {
       try {
         const res = await fetch("/delete-account", { method: "POST" });
-        if (res.ok) {
-          window.location.href = "/register";
-        } else {
+        if (res.ok) { window.location.href = "/register"; }
+        else {
           const data = await res.json();
           alert("Error: " + (data.error || "Could not delete account."));
           overlayDelete.classList.remove("show");
@@ -285,6 +467,13 @@
         alert("Error: " + err.message);
         overlayDelete.classList.remove("show");
       }
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    if (!IS_GUEST) {
+      loadHistory();
+    } else {
+      startNewChat();
     }
   </script>
 </body>

@@ -533,6 +533,41 @@ def buy_coins():
     db.refresh(user)
     return jsonify({"coins": user.coins})
 
+@app.route("/recover")
+def recover():
+    return render_template("recover.html")
+
+
+@app.route("/api/reset-password", methods=["POST"])
+def reset_password():
+    """
+    Called from the recovery page after the browser has re-encrypted the DEK
+    with the new password-derived key. Server only stores hashes + ciphertext.
+    """
+    db   = g.db
+    data = request.get_json(silent=True) or {}
+
+    username      = (data.get("username") or "").strip()
+    new_password  = data.get("new_password", "")
+    kdf_salt      = data.get("kdf_salt", "")
+    encrypted_dek = data.get("encrypted_dek", "")
+
+    if not all([username, new_password, kdf_salt, encrypted_dek]):
+        return jsonify({"error": "Missing fields"}), 400
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    user.password_hash = generate_password_hash(new_password)
+    user.kdf_salt      = kdf_salt
+    user.encrypted_dek = encrypted_dek
+    # recovery_encrypted_dek stays unchanged — same DEK, same recovery key
+    db.commit()
+
+    return jsonify({"ok": True})
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

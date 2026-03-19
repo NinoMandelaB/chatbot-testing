@@ -21,14 +21,19 @@ from crypto import encrypt_str, decrypt_str, encrypt_int, decrypt_int
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String, unique=True, nullable=False)       # plaintext
-    password_hash = Column(Text, nullable=False)                 # Argon2/bcrypt
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username      = Column(String, unique=True, nullable=False)
+    password_hash = Column(Text, nullable=False)
 
-    # encrypted fields map to the existing *_enc columns (BYTEA / `bytea`)
-    email_enc = Column("email_enc", LargeBinary, nullable=False)
+    # server-side master-key encrypted fields (coins, email, gender)
+    email_enc  = Column("email_enc",  LargeBinary, nullable=False)
     gender_enc = Column("gender_enc", LargeBinary, nullable=False)
-    coins_enc = Column("coins_enc", LargeBinary, nullable=False)
+    coins_enc  = Column("coins_enc",  LargeBinary, nullable=False)
+
+    # E2EE fields — server never sees the DEK or plaintext messages
+    kdf_salt              = Column(String(32),  nullable=True)  # hex, 16 bytes
+    encrypted_dek         = Column(String(512), nullable=True)  # AES-GCM(DEK, password-derived key)
+    recovery_encrypted_dek = Column(String(512), nullable=True) # AES-GCM(DEK, recovery key)
 
     created_at = Column(
         DateTime(timezone=True),
@@ -36,11 +41,8 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
-    # relationships
-    messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
+    messages          = relationship("ChatMessage",    back_populates="user", cascade="all, delete-orphan")
     coin_transactions = relationship("CoinTransaction", back_populates="user", cascade="all, delete-orphan")
-
-    # convenience properties for encrypted fields
 
     @property
     def email(self) -> str:
@@ -70,10 +72,14 @@ class User(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    role = Column(String, nullable=False)  # 'user' or 'agent'
-    content_enc = Column("content_enc", LargeBinary, nullable=False)
+    role    = Column(String, nullable=False)   # 'user' or 'agent'
+
+    # content_enc stores AES-GCM ciphertext produced by the BROWSER using the DEK.
+    # The server stores it as a plain text hex string — it cannot decrypt it.
+    content_enc = Column("content_enc", Text, nullable=False)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -86,22 +92,16 @@ class ChatMessage(Base):
 
     user = relationship("User", back_populates="messages")
 
-    @property
-    def content(self) -> str:
-        return decrypt_str(self.content_enc)
-
-    @content.setter
-    def content(self, value: str) -> None:
-        self.content_enc = encrypt_str(value)
+    # No encrypt/decrypt properties here — content is opaque hex to the server
 
 
 class CoinTransaction(Base):
     __tablename__ = "coin_transactions"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
-    delta_enc = Column("delta_enc", LargeBinary, nullable=False)
+    delta_enc  = Column("delta_enc",  LargeBinary, nullable=False)
     reason_enc = Column("reason_enc", LargeBinary, nullable=False)
 
     created_at = Column(

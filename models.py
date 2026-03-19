@@ -25,15 +25,14 @@ class User(Base):
     username      = Column(String, unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
 
-    # server-side master-key encrypted fields (coins, email, gender)
     email_enc  = Column("email_enc",  LargeBinary, nullable=False)
     gender_enc = Column("gender_enc", LargeBinary, nullable=False)
     coins_enc  = Column("coins_enc",  LargeBinary, nullable=False)
 
-    # E2EE fields — server never sees the DEK or plaintext messages
-    kdf_salt              = Column(String(32),  nullable=True)  # hex, 16 bytes
-    encrypted_dek         = Column(String(512), nullable=True)  # AES-GCM(DEK, password-derived key)
-    recovery_encrypted_dek = Column(String(512), nullable=True) # AES-GCM(DEK, recovery key)
+    # E2EE key material
+    kdf_salt               = Column(String(32),  nullable=True)
+    encrypted_dek          = Column(String(512), nullable=True)
+    recovery_encrypted_dek = Column(String(512), nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),
@@ -41,7 +40,7 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
-    messages          = relationship("ChatMessage",    back_populates="user", cascade="all, delete-orphan")
+    messages          = relationship("ChatMessage",     back_populates="user", cascade="all, delete-orphan")
     coin_transactions = relationship("CoinTransaction", back_populates="user", cascade="all, delete-orphan")
 
     @property
@@ -76,8 +75,8 @@ class ChatMessage(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role    = Column(String, nullable=False)   # 'user' or 'agent'
 
-    # content_enc stores AES-GCM ciphertext produced by the BROWSER using the DEK.
-    # The server stores it as a plain text hex string — it cannot decrypt it.
+    # Opaque hex ciphertext produced by the browser with the user's DEK.
+    # The server stores it verbatim and cannot decrypt it.
     content_enc = Column("content_enc", Text, nullable=False)
 
     created_at = Column(
@@ -91,11 +90,15 @@ class ChatMessage(Base):
     )
 
     user = relationship("User", back_populates="messages")
-
-    # No encrypt/decrypt properties here — content is opaque hex to the server
+    # No content property — server never decrypts this
 
 
 class CoinTransaction(Base):
+    """
+    Server-side encrypted with the master key — readable by the business owner,
+    NOT by the user's DEK. This is intentional: dispute resolution requires
+    the owner to be able to audit transactions even if a user deletes their account.
+    """
     __tablename__ = "coin_transactions"
 
     id      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

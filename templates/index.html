@@ -654,12 +654,18 @@
           updateTokenSummary(data.usage);
           if (typeof data.coins === "number") setCoins(data.coins);
 
+          // ONLY update history/cache if the save actually succeeds
           if (!IS_GUEST && getDek()) {
             const userEnc = await encryptText(msg);
             const agentEnc = await encryptText(data.reply || "");
-            if (userEnc) await saveEncryptedMessage("user", userEnc);
+            
+            let saved = false;
+            if (userEnc) saved = await saveEncryptedMessage("user", userEnc);
             if (agentEnc) await saveEncryptedMessage("agent", agentEnc);
-            refreshHistoryItem(currentSessionId, msg);
+            
+            if (saved) {
+                refreshHistoryItem(currentSessionId, msg);
+            }
           }
         }
       } catch (err) {

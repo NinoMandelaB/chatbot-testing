@@ -87,11 +87,13 @@
         });
         const data = await res.json();
 
-        // If valid, reconstruct DEK and save to sessionStorage
+        // If valid, reconstruct DEK and save to localStorage (persistent)
         if (data.salt && data.encrypted_dek) {
           const key = await deriveKey(pass, data.salt);
           const dekBytes = await aesDecryptToBytes(key, data.encrypted_dek);
-          sessionStorage.setItem("dek", bytesToHex(dekBytes));
+          const dekHex = bytesToHex(dekBytes);
+          localStorage.setItem("dek", dekHex);
+          sessionStorage.setItem("dek", dekHex);  // backward compat
         }
       } catch (err) {
         console.error("Client-side decryption failed:", err);

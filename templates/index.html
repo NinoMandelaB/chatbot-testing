@@ -134,7 +134,7 @@
           <a href="/register">Register</a>
           <a href="/login">Login</a>
         {% else %}
-          <a href="/logout" onclick="sessionStorage.removeItem('dek')">Logout</a>
+          <a href="/logout" onclick="clearDek()">Logout</a>
           <button class="btn-danger" style="padding:6px 12px;font-size:0.82rem;"
                   onclick="document.getElementById('overlay-delete').classList.add('show')">
             Delete account
@@ -188,6 +188,7 @@
     let GUEST_ID = null;
     let currentSessionId = null;
     let sessionCache = {};
+    let guestReady = false;
 
     if (IS_GUEST) {
       GUEST_ID = localStorage.getItem("guest_id");
@@ -195,11 +196,13 @@
         GUEST_ID = crypto.randomUUID();
         localStorage.setItem("guest_id", GUEST_ID);
       }
-      const serverGuestId = "{{ guest_id }}";
+      const serverGuestId = "{{ guest_id|default('', true) }}";
       if (!serverGuestId && GUEST_ID) {
         const url = new URL(window.location.href);
         url.searchParams.set("guest_id", GUEST_ID);
         window.location.replace(url.toString());
+      } else {
+        guestReady = true;
       }
     }
 
@@ -213,9 +216,38 @@
       return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
     }
 
+    function dekKey() {
+      // Namespace DEK storage by username to avoid cross-user leakage
+      return USERNAME ? "dek_" + USERNAME : "dek";
+    }
+
     function getDek() {
-      const hex = sessionStorage.getItem("dek");
-      return hex ? hexToBytes(hex) : null;
+      // Check user-specific key first, then legacy keys for backward compat
+      const key = dekKey();
+      const hex = localStorage.getItem(key)
+                || localStorage.getItem("dek")
+                || sessionStorage.getItem("dek");
+      if (hex) {
+        // Migrate to user-specific localStorage key
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, hex);
+        }
+        return hexToBytes(hex);
+      }
+      return null;
+    }
+
+    function storeDek(hexValue) {
+      localStorage.setItem(dekKey(), hexValue);
+      // Also store in legacy keys for backward compat
+      localStorage.setItem("dek", hexValue);
+      sessionStorage.setItem("dek", hexValue);
+    }
+
+    function clearDek() {
+      localStorage.removeItem(dekKey());
+      localStorage.removeItem("dek");
+      sessionStorage.removeItem("dek");
     }
 
     function escapeHtml(str) {
@@ -319,7 +351,7 @@
         const key = await deriveKey(password, data.salt);
         const dekBytes = await aesDecryptToBytes(key, data.encrypted_dek);
 
-        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+        storeDek(bytesToHex(dekBytes));
         document.getElementById("unlock-password").value = "";
         document.getElementById("overlay-unlock").classList.remove("show");
 
@@ -619,6 +651,11 @@
         return;
       }
 
+      if (IS_GUEST && !GUEST_ID) {
+        appendMessage("bot", "Error: guest session not initialized. Please refresh the page.");
+        return;
+      }
+
       if (!currentSessionId) currentSessionId = crypto.randomUUID();
 
       input.value = "";
@@ -626,7 +663,7 @@
       appendMessage("user", msg);
 
       const body = { message: msg };
-      if (IS_GUEST && GUEST_ID) body.guest_id = GUEST_ID;
+      if (IS_GUEST) body.guest_id = GUEST_ID;
 
       try {
         const res = await fetch("/chat", {
@@ -730,7 +767,7 @@
       try {
         const res = await fetch("/delete-account", { method: "POST" });
         if (res.ok) {
-          sessionStorage.removeItem("dek");
+          clearDek();
           window.location.href = "/register";
         } else {
           const data = await res.json();

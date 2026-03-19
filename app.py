@@ -433,7 +433,13 @@ def chat():
 
     if is_guest:
         guest_id = data.get("guest_id", "")
-        coins = get_guest_coins_redis(guest_id) if guest_id else 0
+        if not guest_id:
+            return jsonify({"error": "Missing guest_id"}), 400
+        try:
+            coins = get_guest_coins_redis(guest_id)
+        except Exception as e:
+            print("Redis error for guest:", repr(e))
+            return jsonify({"error": "Could not check guest coins — please try again."}), 503
         if coins <= 0:
             return jsonify({"error": "no_coins"}), 403
     else:
@@ -477,7 +483,10 @@ def chat():
 
         if is_guest:
             current_coins = max(0, coins - cost)
-            set_guest_coins_redis(guest_id, current_coins)
+            try:
+                set_guest_coins_redis(guest_id, current_coins)
+            except Exception as e:
+                print("Redis set error for guest:", repr(e))
         else:
             current_coins = max(0, user.coins - cost)
             user.coins = current_coins

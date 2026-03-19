@@ -224,8 +224,10 @@
         // 5. Encrypt DEK with recovery key
         const recoveryEncryptedDek = await aesEncrypt(recoveryKeyObj, dekBytes);
 
-        // 6. Store DEK in sessionStorage for this session
-        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+        // 6. Store DEK in localStorage (persistent) + sessionStorage (backward compat)
+        const dekHex = bytesToHex(dekBytes);
+        localStorage.setItem("dek", dekHex);
+        sessionStorage.setItem("dek", dekHex);
 
         // 7. Fill hidden fields
         document.getElementById("f-salt").value  = saltHex;

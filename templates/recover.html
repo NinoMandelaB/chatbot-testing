@@ -172,8 +172,10 @@
         const newDerivedKey = await deriveKey(newPw, newSaltHex);
         const newEncryptedDek = await aesEncrypt(newDerivedKey, dekBytes);
 
-        // 4. Store DEK in sessionStorage
-        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+        // 4. Store DEK in localStorage (persistent) + sessionStorage (backward compat)
+        const dekHex = bytesToHex(dekBytes);
+        localStorage.setItem("dek", dekHex);
+        sessionStorage.setItem("dek", dekHex);
 
         // 5. Send new password + new encrypted_dek to server
         const res = await fetch("/api/reset-password", {

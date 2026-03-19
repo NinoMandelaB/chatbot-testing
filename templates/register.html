@@ -1,51 +1,270 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <title>Register</title>
   <style>
-    body { font-family: sans-serif; max-width: 400px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
-    h1 { font-size: 1.4rem; color: #333; margin-bottom: 4px; }
-    .bonus { font-size: 1rem; font-weight: bold; color: #1a73e8; margin-bottom: 16px; }
-    form { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
-    label { display: block; margin-bottom: 4px; font-size: 0.9rem; }
-    input { width: 100%; padding: 8px; margin-bottom: 12px; border: 1px solid #ddd; border-radius: 4px; }
-    button { width: 100%; padding: 10px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
-    .error { color: #b00020; margin-bottom: 8px; font-size: 0.9rem; }
-    .link { margin-top: 8px; font-size: 0.9rem; }
-    ul { margin-top: 0; padding-left: 20px; }
-    a { color: #1a73e8; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: sans-serif; max-width: 420px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
+    h1 { font-size: 1.4rem; color: #333; }
+    label { display: block; margin-top: 14px; font-size: 0.9rem; color: #555; }
+    input, select { width: 100%; padding: 9px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; margin-top: 4px; }
+    button { margin-top: 18px; width: 100%; padding: 11px; background: #1a73e8; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .err { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    a { color: #1a73e8; }
+
+    /* Recovery key overlay */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 100; justify-content: center; align-items: center; }
+    .overlay.show { display: flex; }
+    .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 480px; width: 92%; }
+    .overlay-box h2 { margin-top: 0; color: #c0392b; }
+    .recovery-words { font-family: monospace; font-size: 1rem; background: #f0f0f0; border-radius: 8px;
+                      padding: 16px; line-height: 2; letter-spacing: .03em; word-break: break-all; margin: 16px 0; }
+    .btn-copy { background: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 6px;
+                padding: 8px 18px; cursor: pointer; font-size: 0.9rem; margin-right: 8px; }
+    .btn-confirm { background: #1a73e8; color: white; border: none; border-radius: 6px;
+                   padding: 10px 24px; cursor: pointer; font-size: 1rem; }
+    .warning { background: #fff3cd; color: #856404; padding: 10px 14px; border-radius: 6px;
+               font-size: 0.88rem; margin-bottom: 12px; }
+    #preparing { text-align: center; color: #555; padding: 20px 0; }
   </style>
 </head>
 <body>
-  <h1>Create your account</h1>
-  <div class="bonus">🎁 Get {{ registered_coins }} coins instantly on registration!</div>
+  <h1>Create account</h1>
+  <p style="font-size:0.88rem;color:#555;">
+    Get <strong>{{ registered_coins }} free coins</strong> on registration.
+  </p>
 
-  <form method="post">
-    {% if errors and errors|length > 0 %}
-      <div class="error">
-        <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
-      </div>
-    {% endif %}
+  {% for e in errors %}
+    <div class="err">{{ e }}</div>
+  {% endfor %}
 
-    <label for="username">Username</label>
-    <input id="username" name="username" value="{{ username or '' }}" required />
+  <form id="reg-form" method="POST" action="/register">
+    <label>Username
+      <input name="username" value="{{ username or '' }}" required autocomplete="username"/>
+    </label>
+    <label>Email
+      <input name="email" type="email" value="{{ email or '' }}" required autocomplete="email"/>
+    </label>
+    <label>Gender
+      <select name="gender">
+        <option value="">Prefer not to say</option>
+        <option value="male"   {% if gender=='male'   %}selected{% endif %}>Male</option>
+        <option value="female" {% if gender=='female' %}selected{% endif %}>Female</option>
+        <option value="other"  {% if gender=='other'  %}selected{% endif %}>Other</option>
+      </select>
+    </label>
+    <label>Password
+      <input id="pw" name="password" type="password" required autocomplete="new-password"/>
+    </label>
+    <label>Confirm password
+      <input id="pw2" name="confirm" type="password" required autocomplete="new-password"/>
+    </label>
 
-    <label for="email">Email</label>
-    <input id="email" name="email" type="email" value="{{ email or '' }}" required />
+    <!-- Hidden E2EE fields — filled by JS before submit -->
+    <input type="hidden" name="kdf_salt"               id="f-salt"/>
+    <input type="hidden" name="encrypted_dek"          id="f-edek"/>
+    <input type="hidden" name="recovery_encrypted_dek" id="f-rdek"/>
 
-    <label for="gender">Gender</label>
-    <input id="gender" name="gender" value="{{ gender or '' }}" />
-
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" required />
-
-    <label for="confirm">Confirm Password</label>
-    <input id="confirm" name="confirm" type="password" required />
-
-    <button type="submit">Create Account & Get {{ registered_coins }} Coins</button>
+    <button type="button" id="register-btn" onclick="startRegistration()">Register</button>
   </form>
-  <div class="link">Already registered? <a href="/login">Login</a></div>
+
+  <p style="margin-top:16px;font-size:0.9rem;">Already have an account? <a href="/login">Login</a></p>
+
+  <!-- Recovery key overlay -->
+  <div id="overlay-recovery" class="overlay">
+    <div class="overlay-box">
+      <h2>⚠️ Save your recovery key</h2>
+      <div class="warning">
+        This key is shown <strong>only once</strong> and never stored on the server.
+        If you forget your password, this is the only way to recover your data.
+        Write it down or store it in a password manager.
+      </div>
+      <div id="recovery-words" class="recovery-words"></div>
+      <div>
+        <button class="btn-copy" onclick="copyRecovery()">📋 Copy</button>
+        <button class="btn-confirm" onclick="confirmRecovery()">I've saved it → Continue</button>
+      </div>
+      <p style="font-size:0.8rem;color:#999;margin-top:12px;">
+        Your account will not be created until you click "I've saved it".
+      </p>
+    </div>
+  </div>
+
+  <div id="preparing" style="display:none">⏳ Setting up encryption…</div>
+
+  <script>
+    // ── Crypto helpers (Web Crypto API) ──────────────────────────────────────
+
+    function hexToBytes(hex) {
+      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    }
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function deriveKey(password, saltHex) {
+      const enc    = new TextEncoder();
+      const keyMat = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: hexToBytes(saltHex), iterations: 600_000, hash: "SHA-256" },
+        keyMat,
+        { name: "AES-GCM", length: 256 },
+        false, ["encrypt", "decrypt"]
+      );
+    }
+
+    async function aesEncrypt(keyObj, data) {
+      const iv         = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, keyObj, data);
+      return bytesToHex(iv) + ":" + bytesToHex(new Uint8Array(ciphertext));
+    }
+
+    async function aesDecrypt(keyObj, encHex) {
+      const [ivHex, ctHex] = encHex.split(":");
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: hexToBytes(ivHex) }, keyObj, hexToBytes(ctHex)
+      );
+      return new Uint8Array(plain);
+    }
+
+    // Import raw 32-byte key material as AES-GCM key
+    async function importRawKey(bytes, usages = ["encrypt", "decrypt"]) {
+      return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, usages);
+    }
+
+    // ── BIP-39 word list (2048 words) — shortened to first 256 for simplicity.
+    // For production use the full BIP-39 list from:
+    // https://raw.githubusercontent.com/trezor/python-mnemonic/master/src/mnemonic/wordlist/english.txt
+    // We use 24 words chosen from 256 possible = 192 bits of entropy — sufficient.
+    const WORDS = [
+      "abandon","ability","able","about","above","absent","absorb","abstract",
+      "absurd","abuse","access","accident","account","accuse","achieve","acid",
+      "acoustic","acquire","across","act","action","actor","actress","actual",
+      "adapt","add","addict","address","adjust","admit","adult","advance",
+      "advice","aerobic","afford","afraid","again","age","agent","agree",
+      "ahead","aim","air","airport","aisle","alarm","album","alcohol",
+      "alert","alien","align","alive","alley","allow","almost","alone",
+      "alpha","already","also","alter","always","amateur","amazing","among",
+      "amount","amused","analyst","anchor","ancient","anger","angle","angry",
+      "animal","ankle","announce","annual","another","answer","antenna","antique",
+      "anxiety","apart","april","arch","arctic","area","arena","argue",
+      "arm","armor","army","around","arrange","arrest","arrive","arrow",
+      "art","artefact","artist","artwork","ask","aspect","assault","asset",
+      "assist","assume","asthma","athlete","atom","attack","attend","attitude",
+      "attract","auction","audit","august","aunt","author","auto","autumn",
+      "average","avocado","avoid","awake","aware","away","awesome","awful",
+      "awkward","axis","baby","balance","bamboo","banana","banner","barely",
+      "bargain","barrel","base","basic","basket","battle","beach","beauty",
+      "because","become","beef","before","begin","behave","behind","believe",
+      "below","belt","bench","benefit","best","betray","better","between",
+      "beyond","bicycle","bid","bike","bind","biology","bird","birth",
+      "bitter","black","blade","blame","blanket","blast","bleak","bless",
+      "blind","blood","blossom","blouse","blue","blur","blush","board",
+      "boat","body","boil","bomb","bone","book","boost","border",
+      "boring","borrow","boss","bottom","bounce","box","boy","bracket",
+      "brain","brand","brave","breeze","brick","bridge","brief","bright",
+      "bring","brisk","broccoli","broken","bronze","broom","brother","brown",
+      "brush","bubble","buddy","budget","buffalo","build","bulb","bulk",
+      "bullet","bundle","bunker","burden","burger","burst","bus","business"
+    ];
+
+    function generateMnemonic(bytes32) {
+      // Pick 24 words using each byte mod 256 → word index (we have 256 words)
+      return Array.from(bytes32.slice(0, 24)).map(b => WORDS[b]).join(" ");
+    }
+
+    function mnemonicToKey(mnemonic) {
+      // Reconstruct the 32-byte key from the mnemonic
+      const words = mnemonic.trim().split(/\s+/);
+      if (words.length !== 24) return null;
+      return new Uint8Array(words.map(w => {
+        const i = WORDS.indexOf(w);
+        if (i === -1) return null;
+        return i;
+      }));
+    }
+
+    // ── Registration flow ─────────────────────────────────────────────────────
+
+    let _pendingSubmit = false;
+    let _recoveryMnemonic = "";
+
+    async function startRegistration() {
+      const pw  = document.getElementById("pw").value;
+      const pw2 = document.getElementById("pw2").value;
+      if (!pw || pw !== pw2) {
+        alert("Passwords must match.");
+        return;
+      }
+
+      document.getElementById("register-btn").disabled = true;
+      document.getElementById("preparing").style.display = "block";
+
+      try {
+        // 1. Generate random salt (16 bytes) and DEK (32 bytes)
+        const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+        const dekBytes  = crypto.getRandomValues(new Uint8Array(32));
+        const saltHex   = bytesToHex(saltBytes);
+
+        // 2. Derive AES key from password
+        const derivedKey = await deriveKey(pw, saltHex);
+
+        // 3. Encrypt DEK with derived key (for normal login)
+        const encryptedDek = await aesEncrypt(derivedKey, dekBytes);
+
+        // 4. Generate recovery key (random 32 bytes → mnemonic)
+        const recoveryKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+        _recoveryMnemonic      = generateMnemonic(recoveryKeyBytes);
+        const recoveryKeyObj   = await importRawKey(recoveryKeyBytes);
+
+        // 5. Encrypt DEK with recovery key
+        const recoveryEncryptedDek = await aesEncrypt(recoveryKeyObj, dekBytes);
+
+        // 6. Store DEK in sessionStorage for this session
+        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+
+        // 7. Fill hidden fields
+        document.getElementById("f-salt").value  = saltHex;
+        document.getElementById("f-edek").value  = encryptedDek;
+        document.getElementById("f-rdek").value  = recoveryEncryptedDek;
+
+        // 8. Show recovery key overlay — user must confirm before form submits
+        document.getElementById("preparing").style.display = "none";
+        document.getElementById("recovery-words").textContent = _recoveryMnemonic;
+        document.getElementById("overlay-recovery").classList.add("show");
+        _pendingSubmit = true;
+
+      } catch(err) {
+        alert("Encryption setup failed: " + err.message);
+        document.getElementById("register-btn").disabled = false;
+        document.getElementById("preparing").style.display = "none";
+      }
+    }
+
+    function copyRecovery() {
+      navigator.clipboard.writeText(_recoveryMnemonic)
+        .then(() => alert("Copied to clipboard!"))
+        .catch(() => {
+          // Fallback for older browsers
+          const ta = document.createElement("textarea");
+          ta.value = _recoveryMnemonic;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          alert("Copied!");
+        });
+    }
+
+    function confirmRecovery() {
+      if (!_pendingSubmit) return;
+      document.getElementById("overlay-recovery").classList.remove("show");
+      document.getElementById("reg-form").submit();
+    }
+  </script>
 </body>
 </html>

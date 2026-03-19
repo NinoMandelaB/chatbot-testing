@@ -1,37 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <title>Login</title>
   <style>
-    body { font-family: sans-serif; max-width: 400px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
-    h1 { font-size: 1.4rem; color: #333; margin-bottom: 16px; }
-    form { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
-    label { display: block; margin-bottom: 4px; font-size: 0.9rem; }
-    input { width: 100%; padding: 8px; margin-bottom: 12px; border: 1px solid #ddd; border-radius: 4px; }
-    button { width: 100%; padding: 10px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
-    .error { color: #b00020; margin-bottom: 8px; font-size: 0.9rem; }
-    .link { margin-top: 8px; font-size: 0.9rem; }
-    a { color: #1a73e8; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: sans-serif; max-width: 420px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
+    h1 { font-size: 1.4rem; color: #333; }
+    label { display: block; margin-top: 14px; font-size: 0.9rem; color: #555; }
+    input { width: 100%; padding: 9px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; margin-top: 4px; }
+    button { margin-top: 18px; width: 100%; padding: 11px; background: #1a73e8; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .err { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    a { color: #1a73e8; }
   </style>
 </head>
 <body>
   <h1>Login</h1>
-  <form method="post">
-    {% if error %}
-      <div class="error">{{ error }}</div>
-    {% endif %}
-    <label for="username">Username</label>
-    <input id="username" name="username" value="{{ username or '' }}" required />
 
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" required />
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
-    <button type="submit">Login</button>
+  <!-- Normal login form (posts to Flask for session auth) -->
+  <form id="login-form" method="POST" action="/login">
+    <label>Username
+      <input id="username" name="username" value="{{ username or '' }}" required autocomplete="username"/>
+    </label>
+    <label>Password
+      <input id="password" name="password" type="password" required autocomplete="current-password"/>
+    </label>
+    <button type="button" id="login-btn" onclick="doLogin()">Login</button>
   </form>
-  <div class="link">
-    No account yet? <a href="/register">Register</a>
-  </div>
+
+  <p style="margin-top:12px;font-size:0.9rem;">
+    <a href="/recover">Forgot password? Use recovery key</a>
+  </p>
+  <p style="font-size:0.9rem;">No account? <a href="/register">Register</a></p>
+
+  <script>
+    function hexToBytes(hex) {
+      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    }
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function deriveKey(password, saltHex) {
+      const enc    = new TextEncoder();
+      const keyMat = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: hexToBytes(saltHex), iterations: 600_000, hash: "SHA-256" },
+        keyMat,
+        { name: "AES-GCM", length: 256 },
+        false, ["encrypt", "decrypt"]
+      );
+    }
+
+    async function aesDecrypt(keyObj, encHex) {
+      const [ivHex, ctHex] = encHex.split(":");
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: hexToBytes(ivHex) }, keyObj, hexToBytes(ctHex)
+      );
+      return new Uint8Array(plain);
+    }
+
+    async function doLogin() {
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+      if (!username || !password) return;
+
+      document.getElementById("login-btn").disabled = true;
+      document.getElementById("login-btn").textContent = "Logging in…";
+
+      try {
+        // 1. Fetch KDF params from server (public endpoint)
+        const kdfRes  = await fetch("/api/kdf-params", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+        const kdfData = await kdfRes.json();
+
+        if (kdfData.salt && kdfData.encrypted_dek) {
+          // 2. Derive key from password
+          const derivedKey = await deriveKey(password, kdfData.salt);
+
+          // 3. Decrypt DEK — if password wrong this will throw
+          try {
+            const dekBytes = await aesDecrypt(derivedKey, kdfData.encrypted_dek);
+            // 4. Store DEK in sessionStorage for this tab session
+            sessionStorage.setItem("dek", bytesToHex(dekBytes));
+          } catch(e) {
+            // Wrong password — DEK decryption failed. Still let the server
+            // validate (it will return 401), sessionStorage won't have dek.
+          }
+        }
+
+        // 5. Submit the actual login form to Flask for session cookie
+        document.getElementById("login-form").submit();
+
+      } catch(err) {
+        alert("Login error: " + err.message);
+        document.getElementById("login-btn").disabled = false;
+        document.getElementById("login-btn").textContent = "Login";
+      }
+    }
+
+    // Allow Enter key
+    document.addEventListener("keydown", e => {
+      if (e.key === "Enter") doLogin();
+    });
+  </script>
 </body>
 </html>

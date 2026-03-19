@@ -43,9 +43,10 @@
 </head>
 <body>
 
-  <!-- Zero-coins overlay -->
-  <div id="overlay-coins" class="overlay">
-    <div class="overlay-box">
+<!-- Zero-coins overlay -->
+<div id="overlay-coins" class="overlay">
+  <div class="overlay-box">
+    {% if is_guest %}
       <h2>🪙 You've used all your free coins!</h2>
       <p>Create a free account to keep chatting.</p>
       <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
@@ -54,20 +55,18 @@
         <a href="/register" class="btn-primary">Register (free)</a>
         <a href="/login" class="btn-secondary">Login</a>
       </div>
-    </div>
-  </div>
-
-  <!-- Delete account confirmation overlay -->
-  <div id="overlay-delete" class="overlay">
-    <div class="overlay-box">
-      <h2>⚠️ Delete account?</h2>
-      <p>This will permanently delete your account and <strong>all chat history and coins</strong>. This cannot be undone.</p>
+    {% else %}
+      <h2>🪙 You've run out of coins!</h2>
+      <p>Top up your balance to keep chatting.</p>
       <div class="btn-row">
-        <button class="btn-primary btn-danger" onclick="confirmDelete()">Yes, delete everything</button>
-        <button class="btn-secondary" onclick="closeDeleteOverlay()">Cancel</button>
+        <button class="btn-primary" onclick="overlayCoins.classList.remove('show'); payPack('small')">Small: 5,000 coins — KES 70</button>
+        <button class="btn-secondary" onclick="overlayCoins.classList.remove('show'); payPack('regular')">Regular: 30,000 coins — KES 300</button>
+        <button class="btn-secondary" onclick="overlayCoins.classList.remove('show'); payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
       </div>
-    </div>
+    {% endif %}
   </div>
+</div>
+
 
   <div id="top-bar">
     <div>

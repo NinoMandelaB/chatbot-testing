@@ -15,48 +15,37 @@
     #packs button { padding: 6px 10px; font-size: 0.85rem; margin-right: 4px; margin-top: 4px; }
     #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px; height: 400px; overflow-y: auto; margin-bottom: 12px; }
     .msg { margin: 8px 0; }
-    .user { color: #1a73e8; font-weight: bold; }
-    .bot { color: #333; }
+    .user  { color: #1a73e8; font-weight: bold; }
+    .bot   { color: #333; }
     #input-row { display: flex; gap: 8px; }
     #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
     button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
     button:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-danger { background: #c0392b; }
+    .btn-danger:hover { background: #a93226; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
 
     /* overlay */
-    #overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.65);
-      z-index: 100;
-      justify-content: center;
-      align-items: center;
-    }
-    #overlay.show { display: flex; }
-    #overlay-box {
-      background: white;
-      border-radius: 12px;
-      padding: 32px 28px;
-      max-width: 420px;
-      width: 90%;
-      text-align: center;
-    }
-    #overlay-box h2 { margin-top: 0; font-size: 1.3rem; color: #333; }
-    #overlay-box p { color: #555; font-size: 0.95rem; line-height: 1.5; }
-    #overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
-    #overlay-box .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
-    #overlay-box .btn-row a { padding: 10px 24px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; }
-    .btn-primary { background: #1a73e8; color: white !important; }
-    .btn-secondary { background: #f0f0f0; color: #333 !important; border: 1px solid #ccc; }
+    .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:100; justify-content:center; align-items:center; }
+    .overlay.show { display:flex; }
+    .overlay-box { background:white; border-radius:12px; padding:32px 28px; max-width:420px; width:90%; text-align:center; }
+    .overlay-box h2 { margin-top:0; font-size:1.3rem; color:#333; }
+    .overlay-box p  { color:#555; font-size:0.95rem; line-height:1.5; }
+    .overlay-box .bonus { font-size:1.1rem; font-weight:bold; color:#1a73e8; margin:12px 0; }
+    .btn-row { display:flex; gap:10px; justify-content:center; margin-top:20px; flex-wrap:wrap; }
+    .btn-row a, .btn-row button { padding:10px 24px; border-radius:6px; font-size:1rem; font-weight:bold; text-decoration:none; }
+    .btn-primary   { background:#1a73e8; color:white !important; border:none; cursor:pointer; }
+    .btn-secondary { background:#f0f0f0; color:#333 !important; border:1px solid #ccc; cursor:pointer; }
+    .notice-success { background:#d4edda; color:#155724; padding:8px 12px; border-radius:6px; margin-bottom:10px; font-size:0.9rem; }
+    .notice-error   { background:#f8d7da; color:#721c24; padding:8px 12px; border-radius:6px; margin-bottom:10px; font-size:0.9rem; }
   </style>
 </head>
 <body>
 
   <!-- Zero-coins overlay -->
-  <div id="overlay">
-    <div id="overlay-box">
+  <div id="overlay-coins" class="overlay">
+    <div class="overlay-box">
       <h2>🪙 You've used all your free coins!</h2>
       <p>Create a free account to keep chatting.</p>
       <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
@@ -68,21 +57,42 @@
     </div>
   </div>
 
+  <!-- Delete account confirmation overlay -->
+  <div id="overlay-delete" class="overlay">
+    <div class="overlay-box">
+      <h2>⚠️ Delete account?</h2>
+      <p>This will permanently delete your account and <strong>all chat history and coins</strong>. This cannot be undone.</p>
+      <div class="btn-row">
+        <button class="btn-primary btn-danger" onclick="confirmDelete()">Yes, delete everything</button>
+        <button class="btn-secondary" onclick="closeDeleteOverlay()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="top-bar">
     <div>
       {% if is_guest %}Chatting as <strong>Guest</strong>
       {% else %}Logged in as <strong>{{ username }}</strong>{% endif %}
     </div>
-    <div>
+    <div style="display:flex;gap:12px;align-items:center;">
       {% if is_guest %}
-        <a href="/register">Register</a> &nbsp;|&nbsp; <a href="/login">Login</a>
+        <a href="/register">Register</a>
+        <a href="/login">Login</a>
       {% else %}
         <a href="/logout">Logout</a>
+        <button class="btn-danger" style="padding:6px 12px;font-size:0.85rem;" onclick="openDeleteOverlay()">Delete account</button>
       {% endif %}
     </div>
   </div>
 
   <h1>🤖 Mistral Agent Chat</h1>
+
+  <!-- Payment notices -->
+  {% if request.args.get('payment') == 'success' %}
+    <div class="notice-success">✅ Payment successful! Your coins have been credited.</div>
+  {% elif request.args.get('payment') == 'failed' %}
+    <div class="notice-error">❌ Payment failed or was cancelled. Please try again.</div>
+  {% endif %}
 
   <div id="token-summary">
     Session tokens — prompt: <span id="sum-prompt">0</span>,
@@ -93,17 +103,17 @@
   <div id="coins-bar">
     Coins: <strong id="coins-value">{{ coins }}</strong>
     {% if not is_guest %}
-      <input id="buy-amount" type="number" min="1" placeholder="Amount" />
-      <button id="buy-btn" type="button" onclick="buyCoins()">Buy coins</button>
+      <input id="buy-amount" type="number" min="1" placeholder="Amount (test)" />
+      <button id="buy-btn" type="button" onclick="buyCoins()">Add coins (test)</button>
     {% endif %}
   </div>
 
   {% if not is_guest %}
   <div id="packs">
-    <strong>Coin packs (test mode):</strong><br/>
-    <button type="button" onclick="buyPack('small')">Small: 5,000 coins (KES 70)</button>
-    <button type="button" onclick="buyPack('regular')">Regular: 30,000 coins (KES 300)</button>
-    <button type="button" onclick="buyPack('heavy')">Heavy-use: 80,000 coins (KES 700)</button>
+    <strong>Buy coins via Paystack:</strong><br/>
+    <button type="button" onclick="payPack('small')">Small: 5,000 coins — KES 70</button>
+    <button type="button" onclick="payPack('regular')">Regular: 30,000 coins — KES 300</button>
+    <button type="button" onclick="payPack('heavy')">Heavy-use: 80,000 coins — KES 700</button>
   </div>
   {% endif %}
 
@@ -114,14 +124,15 @@
   </div>
 
   <script>
-    const chatBox      = document.getElementById("chat-box");
-    const input        = document.getElementById("user-input");
-    const btn          = document.getElementById("send-btn");
-    const overlay      = document.getElementById("overlay");
-    const coinsValueEl = document.getElementById("coins-value");
-    const sumPromptEl  = document.getElementById("sum-prompt");
+    const chatBox         = document.getElementById("chat-box");
+    const input           = document.getElementById("user-input");
+    const btn             = document.getElementById("send-btn");
+    const overlayCoins    = document.getElementById("overlay-coins");
+    const overlayDelete   = document.getElementById("overlay-delete");
+    const coinsValueEl    = document.getElementById("coins-value");
+    const sumPromptEl     = document.getElementById("sum-prompt");
     const sumCompletionEl = document.getElementById("sum-completion");
-    const sumTotalEl   = document.getElementById("sum-total");
+    const sumTotalEl      = document.getElementById("sum-total");
 
     let sumPrompt = 0, sumCompletion = 0, sumTotal = 0;
 
@@ -132,15 +143,15 @@
       if (value <= 0) {
         btn.disabled   = true;
         input.disabled = true;
-        overlay.classList.add("show");
+        overlayCoins.classList.add("show");
       } else {
         btn.disabled   = false;
         input.disabled = false;
-        overlay.classList.remove("show");
+        overlayCoins.classList.remove("show");
       }
     }
 
-    setCoins(getCoins()); // init on load
+    setCoins(getCoins());
 
     input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
@@ -166,10 +177,10 @@
     async function sendMessage() {
       const msg = input.value.trim();
       if (!msg) return;
-      if (getCoins() <= 0) { overlay.classList.add("show"); return; }
+      if (getCoins() <= 0) { overlayCoins.classList.add("show"); return; }
 
-      input.value    = "";
-      btn.disabled   = true;
+      input.value  = "";
+      btn.disabled = true;
       appendMessage("user", msg);
 
       try {
@@ -181,10 +192,7 @@
 
         let data;
         try { data = await res.json(); }
-        catch(e) {
-          appendMessage("bot", "Error: unexpected server response.");
-          btn.disabled = false; input.focus(); return;
-        }
+        catch(e) { appendMessage("bot", "Error: unexpected server response."); btn.disabled = false; input.focus(); return; }
 
         if (res.status === 403 && data.error === "no_coins") {
           setCoins(0);
@@ -195,7 +203,6 @@
           updateTokenSummary(data.usage);
           if (typeof data.coins === "number") setCoins(data.coins);
         }
-
       } catch(err) { appendMessage("bot", "Error: " + err.message); }
 
       btn.disabled   = getCoins() <= 0;
@@ -203,6 +210,7 @@
       input.focus();
     }
 
+    // Manual test top-up
     async function buyCoins() {
       const buyAmountEl = document.getElementById("buy-amount");
       const amount = parseInt((buyAmountEl.value || "").trim(), 10);
@@ -212,19 +220,44 @@
         const res  = await fetch("/buy-coins", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
         const data = await res.json();
         if (!res.ok) appendMessage("bot", `Error: ${data.error}`);
-        else { setCoins(data.coins); appendMessage("bot", `Bought ${amount} coins. Balance: ${data.coins}.`); buyAmountEl.value = ""; }
+        else { setCoins(data.coins); appendMessage("bot", `Added ${amount} coins (test). Balance: ${data.coins}.`); buyAmountEl.value = ""; }
       } catch(err) { appendMessage("bot", "Error: " + err.message); }
       document.getElementById("buy-btn").disabled = false;
     }
 
-    async function buyPack(packId) {
+    // Paystack payment
+    async function payPack(packId) {
       try {
-        const res  = await fetch("/buy-pack", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pack: packId}) });
+        const res  = await fetch("/payment/init", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pack: packId }),
+        });
         const data = await res.json();
-        if (!res.ok) { appendMessage("bot", `Error: ${data.error}`); return; }
-        setCoins(data.coins);
-        appendMessage("bot", `Pack "${packId}" purchased: +${data.coins_added} coins (KES ${data.price_kes}). Balance: ${data.coins}.`);
-      } catch(err) { appendMessage("bot", "Error: " + err.message); }
+        if (!res.ok) { appendMessage("bot", `Payment error: ${data.error}`); return; }
+        // Redirect to Paystack checkout page
+        window.location.href = data.authorization_url;
+      } catch(err) { appendMessage("bot", "Payment error: " + err.message); }
+    }
+
+    // Delete account
+    function openDeleteOverlay()  { overlayDelete.classList.add("show"); }
+    function closeDeleteOverlay() { overlayDelete.classList.remove("show"); }
+
+    async function confirmDelete() {
+      try {
+        const res = await fetch("/delete-account", { method: "POST" });
+        if (res.ok) {
+          window.location.href = "/register";
+        } else {
+          const data = await res.json();
+          alert("Error: " + (data.error || "Could not delete account."));
+          closeDeleteOverlay();
+        }
+      } catch(err) {
+        alert("Error: " + err.message);
+        closeDeleteOverlay();
+      }
     }
   </script>
 </body>

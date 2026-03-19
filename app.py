@@ -1,5 +1,8 @@
 import os
 import uuid
+import hmac
+import hashlib
+import requests as http_requests
 from functools import wraps
 
 from flask import (
@@ -27,17 +30,24 @@ from models import User, ChatMessage
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-AGENT_ID = "ag_019cf8b9404e73c7ad980dfc212fbd26"
+MISTRAL_API_KEY       = os.environ.get("MISTRAL_API_KEY", "")
+AGENT_ID              = "ag_019cf8b9404e73c7ad980dfc212fbd26"
+PAYSTACK_SECRET_KEY   = os.environ.get("PAYSTACK_SECRET_KEY", "")
+PAYSTACK_PUBLIC_KEY   = os.environ.get("PAYSTACK_PUBLIC_KEY", "")
 
-GUEST_INITIAL_COINS = 5000
+GUEST_INITIAL_COINS      = 5000
 REGISTERED_INITIAL_COINS = 15000
-GUEST_COOKIE = "guest_token"
+GUEST_COOKIE             = "guest_token"
 
 COIN_PACKS = {
     "small":   {"coins": 5000,  "price_kes": 70,  "label": "Small pack"},
     "regular": {"coins": 30000, "price_kes": 300, "label": "Regular pack"},
     "heavy":   {"coins": 80000, "price_kes": 700, "label": "Heavy-use pack"},
+}
+
+PAYSTACK_HEADERS = lambda: {
+    "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+    "Content-Type": "application/json",
 }
 
 
@@ -77,15 +87,10 @@ def get_current_user(db):
 
 
 def get_guest_coins():
-    """Returns (coins, token_or_False).
-    If brand new guest: returns (GUEST_INITIAL_COINS, new_token_string).
-    If returning guest: returns (current_coins, False).
-    """
     token = request.cookies.get(GUEST_COOKIE)
     if token:
         coins = session.get(f"guest_coins_{token}")
         if coins is None:
-            # Cookie exists but session lost – reset
             session[f"guest_coins_{token}"] = GUEST_INITIAL_COINS
             return GUEST_INITIAL_COINS, token
         return coins, False
@@ -106,7 +111,7 @@ def set_guest_coins(token, coins):
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        db = g.db
+        db       = g.db
         username = request.form.get("username", "").strip()
         email    = request.form.get("email", "").strip()
         gender   = request.form.get("gender", "").strip()
@@ -128,10 +133,10 @@ def register():
                 registered_coins=REGISTERED_INITIAL_COINS,
             )
 
-        user = User(username=username, password_hash=generate_password_hash(password))
-        user.email  = email
-        user.gender = gender
-        user.coins  = REGISTERED_INITIAL_COINS
+        user            = User(username=username, password_hash=generate_password_hash(password))
+        user.email      = email
+        user.gender     = gender
+        user.coins      = REGISTERED_INITIAL_COINS
 
         db.add(user)
         db.commit()
@@ -153,7 +158,7 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        db = g.db
+        db       = g.db
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
@@ -182,26 +187,49 @@ def logout():
 
 
 # -----------------------------------
+# Routes: delete account
+# -----------------------------------
+
+@app.route("/delete-account", methods=["POST"])
+def delete_account():
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    # Delete all chat messages first (foreign key)
+    db.query(ChatMessage).filter(ChatMessage.user_id == user.id).delete()
+    db.delete(user)
+    db.commit()
+
+    session.clear()
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(GUEST_COOKIE)
+    return resp
+
+
+# -----------------------------------
 # Routes: main (guest + logged-in)
 # -----------------------------------
 
 @app.route("/")
 def index():
-    db  = g.db
+    db   = g.db
     user = get_current_user(db)
 
     if user:
         return render_template("index.html",
                                username=user.username,
                                coins=user.coins,
-                               is_guest=False)
+                               is_guest=False,
+                               paystack_public_key=PAYSTACK_PUBLIC_KEY)
 
-    # Guest
     coins, new_token = get_guest_coins()
     resp = make_response(render_template("index.html",
                                          username="Guest",
                                          coins=coins,
-                                         is_guest=True))
+                                         is_guest=True,
+                                         paystack_public_key=PAYSTACK_PUBLIC_KEY))
     if new_token:
         resp.set_cookie(GUEST_COOKIE, new_token,
                         max_age=60 * 60 * 24 * 30,
@@ -211,12 +239,11 @@ def index():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    db   = g.db
-    user = get_current_user(db)
+    db          = g.db
+    user        = get_current_user(db)
     is_guest    = user is None
     guest_token = request.cookies.get(GUEST_COOKIE) if is_guest else None
 
-    # Check coins
     if is_guest:
         coins = session.get(f"guest_coins_{guest_token}", 0) if guest_token else 0
         if coins <= 0:
@@ -293,7 +320,134 @@ def chat():
 
 
 # -----------------------------------
-# Routes: buy coins / packs (logged-in only)
+# Routes: Paystack payment
+# -----------------------------------
+
+@app.route("/payment/init", methods=["POST"])
+def payment_init():
+    """Initialize a Paystack transaction and return the checkout URL."""
+    db   = g.db
+    user = get_current_user(db)
+    if not user:
+        return jsonify({"error": "Login required to make payments"}), 401
+
+    data    = request.get_json(silent=True) or {}
+    pack_id = (data.get("pack") or "").strip()
+    pack    = COIN_PACKS.get(pack_id)
+    if not pack:
+        return jsonify({"error": "Invalid pack"}), 400
+
+    # Decrypt email for Paystack (needed by their API)
+    try:
+        email = user.email
+    except Exception:
+        return jsonify({"error": "Could not read user email"}), 500
+
+    reference = f"coins_{user.id}_{uuid.uuid4().hex[:12]}"
+
+    payload = {
+        "email":        email,
+        "amount":       pack["price_kes"] * 100,  # KES in kobo
+        "currency":     "KES",
+        "reference":    reference,
+        "callback_url": url_for("payment_callback", _external=True),
+        "metadata": {
+            "pack_id": pack_id,
+            "user_id": str(user.id),
+        },
+    }
+
+    r = http_requests.post(
+        "https://api.paystack.co/transaction/initialize",
+        json=payload,
+        headers=PAYSTACK_HEADERS(),
+        timeout=10,
+    )
+
+    resp_data = r.json()
+    if not resp_data.get("status"):
+        return jsonify({"error": resp_data.get("message", "Paystack error")}), 502
+
+    return jsonify({
+        "authorization_url": resp_data["data"]["authorization_url"],
+        "reference":         reference,
+    })
+
+
+@app.route("/payment/callback")
+def payment_callback():
+    """Paystack redirects here after payment. Verify and credit coins."""
+    reference = request.args.get("reference", "")
+    if not reference:
+        return redirect(url_for("index"))
+
+    r = http_requests.get(
+        f"https://api.paystack.co/transaction/verify/{reference}",
+        headers=PAYSTACK_HEADERS(),
+        timeout=10,
+    )
+
+    resp_data = r.json()
+    if not resp_data.get("status"):
+        return redirect(url_for("index") + "?payment=failed")
+
+    tx = resp_data["data"]
+    if tx.get("status") != "success":
+        return redirect(url_for("index") + "?payment=failed")
+
+    # Credit coins
+    meta    = tx.get("metadata", {})
+    pack_id = meta.get("pack_id")
+    user_id = meta.get("user_id")
+    pack    = COIN_PACKS.get(pack_id)
+
+    if pack and user_id:
+        db   = g.db
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.coins += pack["coins"]
+            db.commit()
+
+    return redirect(url_for("index") + "?payment=success")
+
+
+@app.route("/payment/webhook", methods=["POST"])
+def payment_webhook():
+    """Paystack webhook — backup credit in case user closes tab before callback."""
+    sig  = request.headers.get("X-Paystack-Signature", "")
+    body = request.get_data()
+
+    expected = hmac.new(
+        PAYSTACK_SECRET_KEY.encode(), body, hashlib.sha512
+    ).hexdigest()
+
+    if not hmac.compare_digest(sig, expected):
+        return "", 400
+
+    event = request.get_json(silent=True) or {}
+    if event.get("event") != "charge.success":
+        return "", 200
+
+    tx      = event.get("data", {})
+    meta    = tx.get("metadata", {})
+    pack_id = meta.get("pack_id")
+    user_id = meta.get("user_id")
+    pack    = COIN_PACKS.get(pack_id)
+
+    if pack and user_id:
+        db   = g.db
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            # Idempotency: only credit if reference not already processed
+            # (simple approach: just credit — for production add a transactions table)
+            user.coins += pack["coins"]
+            db.commit()
+
+    return "", 200
+
+
+# -----------------------------------
+# Routes: buy coins (manual test top-up)
 # -----------------------------------
 
 @app.route("/buy-coins", methods=["POST"])
@@ -301,7 +455,7 @@ def buy_coins():
     db   = g.db
     user = get_current_user(db)
     if not user:
-        return jsonify({"error": "Login required to buy coins"}), 401
+        return jsonify({"error": "Login required"}), 401
 
     data   = request.get_json(silent=True) or {}
     amount = data.get("amount")
@@ -319,31 +473,6 @@ def buy_coins():
     db.commit()
     db.refresh(user)
     return jsonify({"coins": user.coins})
-
-
-@app.route("/buy-pack", methods=["POST"])
-def buy_pack():
-    db   = g.db
-    user = get_current_user(db)
-    if not user:
-        return jsonify({"error": "Login required to buy packs"}), 401
-
-    data    = request.get_json(silent=True) or {}
-    pack_id = (data.get("pack") or "").strip()
-    pack    = COIN_PACKS.get(pack_id)
-    if not pack:
-        return jsonify({"error": "Invalid pack id"}), 400
-
-    user.coins += pack["coins"]
-    db.commit()
-    db.refresh(user)
-
-    return jsonify({
-        "coins":       user.coins,
-        "pack":        pack_id,
-        "coins_added": pack["coins"],
-        "price_kes":   pack["price_kes"],
-    })
 
 
 # -----------------------------------

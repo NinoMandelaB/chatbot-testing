@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Account Recovery</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: sans-serif; max-width: 480px; margin: 60px auto; padding: 0 16px; background: #f5f5f5; }
+    h1 { font-size: 1.4rem; color: #333; }
+    label { display: block; margin-top: 14px; font-size: 0.9rem; color: #555; }
+    input, textarea { width: 100%; padding: 9px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; margin-top: 4px; }
+    textarea { height: 90px; resize: vertical; font-family: monospace; }
+    button { margin-top: 18px; width: 100%; padding: 11px; background: #1a73e8; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    button:disabled { background: #aaa; }
+    .err { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    .ok  { background: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9rem; }
+    a { color: #1a73e8; }
+  </style>
+</head>
+<body>
+  <h1>🔑 Recover account</h1>
+  <p style="font-size:0.9rem;color:#555;">Enter your username and 24-word recovery key to set a new password.</p>
+
+  <div id="msg"></div>
+
+  <label>Username
+    <input id="username" type="text" autocomplete="username"/>
+  </label>
+  <label>Recovery key (24 words)
+    <textarea id="recovery-input" placeholder="word1 word2 word3 …"></textarea>
+  </label>
+  <label>New password
+    <input id="new-pw" type="password" autocomplete="new-password"/>
+  </label>
+  <label>Confirm new password
+    <input id="new-pw2" type="password" autocomplete="new-password"/>
+  </label>
+  <button id="recover-btn" onclick="doRecover()">Reset password & recover</button>
+
+  <p style="margin-top:12px;font-size:0.9rem;"><a href="/login">← Back to login</a></p>
+
+  <script>
+    function hexToBytes(hex) {
+      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    }
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    const WORDS = [
+      "abandon","ability","able","about","above","absent","absorb","abstract",
+      "absurd","abuse","access","accident","account","accuse","achieve","acid",
+      "acoustic","acquire","across","act","action","actor","actress","actual",
+      "adapt","add","addict","address","adjust","admit","adult","advance",
+      "advice","aerobic","afford","afraid","again","age","agent","agree",
+      "ahead","aim","air","airport","aisle","alarm","album","alcohol",
+      "alert","alien","align","alive","alley","allow","almost","alone",
+      "alpha","already","also","alter","always","amateur","amazing","among",
+      "amount","amused","analyst","anchor","ancient","anger","angle","angry",
+      "animal","ankle","announce","annual","another","answer","antenna","antique",
+      "anxiety","apart","april","arch","arctic","area","arena","argue",
+      "arm","armor","army","around","arrange","arrest","arrive","arrow",
+      "art","artefact","artist","artwork","ask","aspect","assault","asset",
+      "assist","assume","asthma","athlete","atom","attack","attend","attitude",
+      "attract","auction","audit","august","aunt","author","auto","autumn",
+      "average","avocado","avoid","awake","aware","away","awesome","awful",
+      "awkward","axis","baby","balance","bamboo","banana","banner","barely",
+      "bargain","barrel","base","basic","basket","battle","beach","beauty",
+      "because","become","beef","before","begin","behave","behind","believe",
+      "below","belt","bench","benefit","best","betray","better","between",
+      "beyond","bicycle","bid","bike","bind","biology","bird","birth",
+      "bitter","black","blade","blame","blanket","blast","bleak","bless",
+      "blind","blood","blossom","blouse","blue","blur","blush","board",
+      "boat","body","boil","bomb","bone","book","boost","border",
+      "boring","borrow","boss","bottom","bounce","box","boy","bracket",
+      "brain","brand","brave","breeze","brick","bridge","brief","bright",
+      "bring","brisk","broccoli","broken","bronze","broom","brother","brown",
+      "brush","bubble","buddy","budget","buffalo","build","bulb","bulk",
+      "bullet","bundle","bunker","burden","burger","burst","bus","business"
+    ];
+
+    function mnemonicToBytes(mnemonic) {
+      const words = mnemonic.trim().toLowerCase().split(/\s+/);
+      if (words.length !== 24) return null;
+      const bytes = new Uint8Array(24);
+      for (let i = 0; i < 24; i++) {
+        const idx = WORDS.indexOf(words[i]);
+        if (idx === -1) return null;
+        bytes[i] = idx;
+      }
+      return bytes;
+    }
+
+    async function deriveKey(password, saltHex) {
+      const enc    = new TextEncoder();
+      const keyMat = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: hexToBytes(saltHex), iterations: 600_000, hash: "SHA-256" },
+        keyMat,
+        { name: "AES-GCM", length: 256 },
+        false, ["encrypt", "decrypt"]
+      );
+    }
+
+    async function aesEncrypt(keyObj, data) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, keyObj, data);
+      return bytesToHex(iv) + ":" + bytesToHex(new Uint8Array(ct));
+    }
+
+    async function aesDecrypt(keyObj, encHex) {
+      const [ivHex, ctHex] = encHex.split(":");
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: hexToBytes(ivHex) }, keyObj, hexToBytes(ctHex)
+      );
+      return new Uint8Array(plain);
+    }
+
+    function showMsg(text, type) {
+      const el = document.getElementById("msg");
+      el.className = type;
+      el.textContent = text;
+    }
+
+    async function doRecover() {
+      const username  = document.getElementById("username").value.trim();
+      const mnemonic  = document.getElementById("recovery-input").value.trim();
+      const newPw     = document.getElementById("new-pw").value;
+      const newPw2    = document.getElementById("new-pw2").value;
+
+      if (!username || !mnemonic || !newPw) { showMsg("All fields required.", "err"); return; }
+      if (newPw !== newPw2)                  { showMsg("Passwords do not match.", "err"); return; }
+
+      const recoveryBytes = mnemonicToBytes(mnemonic);
+      if (!recoveryBytes)  { showMsg("Invalid recovery key — check all 24 words.", "err"); return; }
+
+      document.getElementById("recover-btn").disabled = true;
+
+      try {
+        // 1. Fetch KDF params (includes recovery_encrypted_dek)
+        const kdfRes  = await fetch("/api/kdf-params", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+        const kdfData = await kdfRes.json();
+
+        if (!kdfData.recovery_encrypted_dek) {
+          showMsg("Account not found or not set up for recovery.", "err");
+          document.getElementById("recover-btn").disabled = false;
+          return;
+        }
+
+        // 2. Decrypt DEK using recovery key
+        const recoveryKeyObj = await crypto.subtle.importKey(
+          "raw", recoveryBytes, "AES-GCM", false, ["decrypt"]
+        );
+        let dekBytes;
+        try {
+          dekBytes = await aesDecrypt(recoveryKeyObj, kdfData.recovery_encrypted_dek);
+        } catch(e) {
+          showMsg("Recovery key is incorrect.", "err");
+          document.getElementById("recover-btn").disabled = false;
+          return;
+        }
+
+        // 3. Generate new salt and re-encrypt DEK with new password
+        const newSaltBytes = crypto.getRandomValues(new Uint8Array(16));
+        const newSaltHex   = bytesToHex(newSaltBytes);
+        const newDerivedKey = await deriveKey(newPw, newSaltHex);
+        const newEncryptedDek = await aesEncrypt(newDerivedKey, dekBytes);
+
+        // 4. Store DEK in sessionStorage
+        sessionStorage.setItem("dek", bytesToHex(dekBytes));
+
+        // 5. Send new password + new encrypted_dek to server
+        const res = await fetch("/api/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            new_password:  newPw,
+            kdf_salt:      newSaltHex,
+            encrypted_dek: newEncryptedDek,
+          }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showMsg("Error: " + (data.error || "Unknown error"), "err");
+          document.getElementById("recover-btn").disabled = false;
+          return;
+        }
+
+        showMsg("✅ Password reset! Redirecting to login…", "ok");
+        setTimeout(() => window.location.href = "/login", 1500);
+
+      } catch(err) {
+        showMsg("Error: " + err.message, "err");
+        document.getElementById("recover-btn").disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

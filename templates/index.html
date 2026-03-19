@@ -25,8 +25,6 @@
     .btn-danger:hover { background: #a93226 !important; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
-
-    /* overlays */
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; justify-content: center; align-items: center; }
     .overlay.show { display: flex; }
     .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 420px; width: 90%; text-align: center; }
@@ -136,6 +134,28 @@
   </div>
 
   <script>
+    // ─── Guest ID (localStorage — survives cookie clears) ───────────────────
+    const IS_GUEST = {{ 'true' if is_guest else 'false' }};
+    let GUEST_ID   = null;
+
+    if (IS_GUEST) {
+      GUEST_ID = localStorage.getItem("guest_id");
+      if (!GUEST_ID) {
+        GUEST_ID = crypto.randomUUID();
+        localStorage.setItem("guest_id", GUEST_ID);
+      }
+
+      // If the server rendered with no guest_id (first ever load),
+      // reload with the ID so the server can show the correct balance.
+      const serverGuestId = "{{ guest_id }}";
+      if (!serverGuestId && GUEST_ID) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("guest_id", GUEST_ID);
+        window.location.replace(url.toString());
+      }
+    }
+
+    // ─── DOM refs ────────────────────────────────────────────────────────────
     const chatBox         = document.getElementById("chat-box");
     const input           = document.getElementById("user-input");
     const btn             = document.getElementById("send-btn");
@@ -164,7 +184,6 @@
     }
 
     setCoins(getCoins());
-
     input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
     function appendMessage(role, text) {
@@ -195,11 +214,15 @@
       btn.disabled = true;
       appendMessage("user", msg);
 
+      // Always include guest_id for guests so server looks up Redis
+      const body = { message: msg };
+      if (IS_GUEST && GUEST_ID) body.guest_id = GUEST_ID;
+
       try {
         const res = await fetch("/chat", {
-          method: "POST",
+          method:  "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: msg }),
+          body:    JSON.stringify(body),
         });
 
         let data;
@@ -239,8 +262,7 @@
     async function payPack(packId) {
       try {
         const res  = await fetch("/payment/init", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pack: packId }),
         });
         const data = await res.json();

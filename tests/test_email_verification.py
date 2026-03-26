@@ -6,6 +6,7 @@ Patches SMTP so no real email is sent during tests.
 """
 
 import os
+import smtplib
 import sys
 import uuid
 from unittest.mock import patch, MagicMock
@@ -271,3 +272,74 @@ class TestSendVerificationEmail:
         from app import send_verification_email
         result = send_verification_email("user@example.com", "a" * 64)
         assert result is False
+
+    def test_returns_false_when_mail_server_not_set(self, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "MAIL_SERVER", "")
+        result = app_module.send_verification_email("user@example.com", "a" * 64)
+        assert result is False
+
+    def test_returns_false_when_credentials_missing(self, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "MAIL_USERNAME", "")
+        monkeypatch.setattr(app_module, "MAIL_PASSWORD", "")
+        result = app_module.send_verification_email("user@example.com", "a" * 64)
+        assert result is False
+
+    @patch("smtplib.SMTP")
+    def test_returns_false_on_auth_error(self, mock_smtp_cls):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+        mock_server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Auth failed")
+
+        from app import send_verification_email
+        result = send_verification_email("user@example.com", "a" * 64)
+        assert result is False
+
+
+class TestRegistrationEmailFeedback:
+    """Registration should show different messages based on whether email was sent."""
+
+    def test_registration_shows_success_when_email_sent(self, client):
+        """When email sends successfully, user sees 'check your email'."""
+        resp, mock_send = _register_user(client)  # mock returns True
+        assert resp.status_code == 200
+        assert b"check your email" in resp.data.lower()
+        # Should NOT show resend button when email was sent
+        assert b"couldn" not in resp.data.lower()
+
+    def test_registration_shows_resend_when_email_fails(self, client):
+        """When email fails, user sees failure message and resend option."""
+        with patch("app.send_verification_email", return_value=False):
+            resp = client.post("/register", data={
+                "username": "bob",
+                "email": "bob@example.com",
+                "gender": "male",
+                "password": "Secret123",
+                "confirm": "Secret123",
+                "kdf_salt": "a" * 32,
+                "encrypted_dek": "b" * 64,
+                "recovery_encrypted_dek": "c" * 64,
+            }, follow_redirects=False)
+        assert resp.status_code == 200
+        assert b"couldn" in resp.data.lower()  # "couldn't send"
+        assert b"resend-verification" in resp.data.lower()
+
+
+class TestResendVerificationFeedback:
+    """Resend route should show different messages based on email result."""
+
+    def test_resend_shows_failure_message_when_email_fails(self, client):
+        _register_user(client)
+        with patch("app.send_verification_email", return_value=False):
+            resp = client.post("/resend-verification", data={"username": "alice"})
+        assert resp.status_code == 200
+        assert b"couldn" in resp.data.lower()
+        assert b"resend-verification" in resp.data.lower()
+
+    def test_resend_shows_success_message_when_email_sent(self, client):
+        _register_user(client)
+        with patch("app.send_verification_email", return_value=True):
+            resp = client.post("/resend-verification", data={"username": "alice"})
+        assert resp.status_code == 200
+        assert b"new verification email has been sent" in resp.data.lower()

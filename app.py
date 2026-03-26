@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 import hmac
@@ -66,6 +67,30 @@ MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "")
 MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
 MAIL_FROM = os.environ.get("MAIL_FROM", "")
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:5000").rstrip("/")
+
+# -----------------------------------
+# Mail configuration startup warnings
+# -----------------------------------
+logger = logging.getLogger(__name__)
+
+if not MAIL_SERVER or not MAIL_FROM:
+    logger.warning(
+        "MAIL_SERVER or MAIL_FROM not set — email sending is disabled. "
+        "Set MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, and MAIL_FROM "
+        "to enable verification emails."
+    )
+elif not MAIL_USERNAME or not MAIL_PASSWORD:
+    logger.warning(
+        "MAIL_SERVER is set but MAIL_USERNAME or MAIL_PASSWORD is missing. "
+        "SMTP authentication will fail and emails will not be sent."
+    )
+
+if APP_BASE_URL.startswith("http://localhost"):
+    logger.warning(
+        "APP_BASE_URL is '%s' — verification links will point to localhost "
+        "and be unreachable for real users. Set APP_BASE_URL to your public URL.",
+        APP_BASE_URL,
+    )
 
 
 # -----------------------------------
@@ -137,10 +162,17 @@ def generate_verification_token():
 def send_verification_email(to_email: str, token: str) -> bool:
     """
     Send a verification email with a clickable link.
-    Returns True on success, False on failure (logged to stdout).
+    Returns True on success, False on failure (logged via logger).
     """
     if not MAIL_SERVER or not MAIL_FROM:
-        print("WARN: Mail not configured — skipping verification email.")
+        logger.warning("Mail not configured (MAIL_SERVER or MAIL_FROM empty) — skipping verification email.")
+        return False
+
+    if not MAIL_USERNAME or not MAIL_PASSWORD:
+        logger.error(
+            "MAIL_USERNAME or MAIL_PASSWORD not set — cannot authenticate with SMTP server. "
+            "Email to %s will not be sent.", to_email,
+        )
         return False
 
     verify_url = f"{APP_BASE_URL}/verify-email/{token}"
@@ -173,14 +205,28 @@ def send_verification_email(to_email: str, token: str) -> bool:
             server.starttls()
             server.ehlo()
 
-        if MAIL_USERNAME and MAIL_PASSWORD:
-            server.login(MAIL_USERNAME, MAIL_PASSWORD)
-
+        server.login(MAIL_USERNAME, MAIL_PASSWORD)
         server.sendmail(MAIL_FROM, to_email, msg.as_string())
         server.quit()
+        logger.info("Verification email sent to %s", to_email)
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(
+            "SMTP authentication failed for %s (server=%s, port=%d, user=%s): %r",
+            to_email, MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, e,
+        )
+        return False
+    except smtplib.SMTPException as e:
+        logger.error(
+            "SMTP error sending verification email to %s (server=%s, port=%d): %r",
+            to_email, MAIL_SERVER, MAIL_PORT, e,
+        )
+        return False
     except Exception as e:
-        print(f"ERROR sending verification email to {to_email}: {e!r}")
+        logger.error(
+            "Unexpected error sending verification email to %s: %r",
+            to_email, e, exc_info=True,
+        )
         return False
 
 
@@ -260,17 +306,26 @@ def register():
         db.commit()
         db.refresh(user)
 
-        # Send verification email (best-effort; user can resend later)
-        send_verification_email(email, token)
+        # Send verification email and give the user accurate feedback
+        email_sent = send_verification_email(email, token)
 
         # Do NOT log the user in yet — they must verify their email first.
         # Redirect to login with a notice.
-        return render_template(
-            "login.html",
-            error="Registration successful! Please check your email and "
-                  "click the verification link before logging in.",
-            username=username,
-        )
+        if email_sent:
+            return render_template(
+                "login.html",
+                error="Registration successful! Please check your email and "
+                      "click the verification link before logging in.",
+                username=username,
+            )
+        else:
+            return render_template(
+                "login.html",
+                error="Registration successful, but we couldn't send the "
+                      "verification email. Please try resending it below.",
+                username=username,
+                show_resend=True,
+            )
 
     return render_template(
         "register.html",
@@ -371,11 +426,18 @@ def resend_verification():
     user.verification_token = new_token
     db.commit()
 
-    send_verification_email(user.email, new_token)
+    email_sent = send_verification_email(user.email, new_token)
 
-    return render_template("login.html",
-                           error="A new verification email has been sent. Please check your inbox.",
-                           username=username)
+    if email_sent:
+        return render_template("login.html",
+                               error="A new verification email has been sent. Please check your inbox.",
+                               username=username)
+    else:
+        return render_template("login.html",
+                               error="We couldn't send the verification email right now. "
+                                     "Please try again later or contact support.",
+                               username=username,
+                               show_resend=True)
 
 
 # -----------------------------------

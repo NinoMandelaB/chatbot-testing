@@ -369,6 +369,22 @@ class TestSendVerificationEmail:
         assert "a" * 64 in raw_msg
 
     @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP")
+    def test_email_contains_date_and_message_id_headers(self, mock_smtp_cls, mock_resolve):
+        """RFC 5322 requires Date; Message-ID is needed for deliverability."""
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        from app import send_verification_email
+        result = send_verification_email("user@example.com", "a" * 64)
+
+        assert result is True
+        raw_msg = mock_server.sendmail.call_args[0][2]
+        assert "Date:" in raw_msg, "Missing Date header — RFC 5322 violation"
+        assert "Message-ID:" in raw_msg or "Message-Id:" in raw_msg, \
+            "Missing Message-ID header — causes spam filtering"
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
     @patch("app._IPv4SMTP", side_effect=Exception("Connection refused"))
     def test_returns_false_on_smtp_error(self, mock_smtp_cls, mock_resolve):
         from app import send_verification_email

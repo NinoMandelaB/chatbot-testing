@@ -9,6 +9,7 @@ import secrets
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import formatdate, make_msgid
 
 import requests as http_requests
 import redis as redis_lib
@@ -274,6 +275,8 @@ def send_verification_email(to_email: str, token: str) -> bool:
     msg["Subject"] = "Verify your email address"
     msg["From"] = MAIL_FROM
     msg["To"] = to_email
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=MAIL_FROM.split("@")[-1] if "@" in MAIL_FROM else "localhost")
 
     text_body = (
         f"Welcome! Please verify your email by visiting this link:\n\n"

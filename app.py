@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import sys
 import uuid
 import hmac
 import hashlib
@@ -175,11 +176,14 @@ def _resolve_smtp_ipv4(host: str, port: int) -> str:
         results = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
         if results:
             ipv4_addr = results[0][4][0]
+            print(f"[EMAIL] Resolved SMTP host {host} to IPv4 address {ipv4_addr}", flush=True)
             logger.info(
                 "Resolved SMTP host %s to IPv4 address %s", host, ipv4_addr,
             )
             return ipv4_addr
+        print(f"[EMAIL] No IPv4 results for {host}:{port} — using hostname as-is", file=sys.stderr, flush=True)
     except socket.gaierror as exc:
+        print(f"[EMAIL] IPv4 DNS resolution failed for {host}:{port}: {exc!r} — falling back to hostname", file=sys.stderr, flush=True)
         logger.warning(
             "IPv4 DNS resolution failed for %s:%d — falling back to hostname: %r",
             host, port, exc,
@@ -249,11 +253,15 @@ def send_verification_email(to_email: str, token: str) -> bool:
     Send a verification email with a clickable link.
     Returns True on success, False on failure (logged via logger).
     """
+    print(f"[EMAIL] send_verification_email called for {to_email}", flush=True)
+
     if not MAIL_SERVER or not MAIL_FROM:
+        print(f"[EMAIL] FAIL: Mail not configured (MAIL_SERVER={MAIL_SERVER!r}, MAIL_FROM={MAIL_FROM!r})", file=sys.stderr, flush=True)
         logger.warning("Mail not configured (MAIL_SERVER or MAIL_FROM empty) — skipping verification email.")
         return False
 
     if not MAIL_USERNAME or not MAIL_PASSWORD:
+        print(f"[EMAIL] FAIL: Missing credentials (MAIL_USERNAME set={bool(MAIL_USERNAME)}, MAIL_PASSWORD set={bool(MAIL_PASSWORD)})", file=sys.stderr, flush=True)
         logger.error(
             "MAIL_USERNAME or MAIL_PASSWORD not set — cannot authenticate with SMTP server. "
             "Email to %s will not be sent.", to_email,
@@ -282,35 +290,45 @@ def send_verification_email(to_email: str, token: str) -> bool:
     msg.attach(MIMEText(html_body, "html"))
 
     # Resolve to IPv4 to avoid IPv6 failures on Railway
+    print(f"[EMAIL] Resolving SMTP host {MAIL_SERVER}:{MAIL_PORT} to IPv4...", flush=True)
     smtp_host = _resolve_smtp_ipv4(MAIL_SERVER, MAIL_PORT)
 
     try:
+        print(f"[EMAIL] Connecting to SMTP server {smtp_host}:{MAIL_PORT} (use_ssl={MAIL_PORT == 465})...", flush=True)
         if MAIL_PORT == 465:
             server = _IPv4SMTP_SSL(smtp_host, MAIL_PORT, timeout=10)
         else:
             server = _IPv4SMTP(smtp_host, MAIL_PORT, timeout=10)
             server.ehlo()
+            print(f"[EMAIL] STARTTLS on {smtp_host}:{MAIL_PORT}...", flush=True)
             server.starttls()
+            print(f"[EMAIL] STARTTLS completed successfully", flush=True)
             server.ehlo()
 
+        print(f"[EMAIL] Connected. Logging in as {MAIL_USERNAME}...", flush=True)
         server.login(MAIL_USERNAME, MAIL_PASSWORD)
+        print(f"[EMAIL] Login successful. Sending email to {to_email}...", flush=True)
         server.sendmail(MAIL_FROM, to_email, msg.as_string())
         server.quit()
+        print(f"[EMAIL] SUCCESS: Verification email sent to {to_email} via {smtp_host}", flush=True)
         logger.info("Verification email sent to %s via %s", to_email, smtp_host)
         return True
     except smtplib.SMTPAuthenticationError as e:
+        print(f"[EMAIL] FAIL: SMTP auth error for {to_email} (server={MAIL_SERVER} [{smtp_host}], port={MAIL_PORT}, user={MAIL_USERNAME}): {e!r}", file=sys.stderr, flush=True)
         logger.error(
             "SMTP authentication failed for %s (server=%s [%s], port=%d, user=%s): %r",
             to_email, MAIL_SERVER, smtp_host, MAIL_PORT, MAIL_USERNAME, e,
         )
         return False
     except smtplib.SMTPException as e:
+        print(f"[EMAIL] FAIL: SMTP error for {to_email} (server={MAIL_SERVER} [{smtp_host}], port={MAIL_PORT}): {e!r}", file=sys.stderr, flush=True)
         logger.error(
             "SMTP error sending verification email to %s (server=%s [%s], port=%d): %r",
             to_email, MAIL_SERVER, smtp_host, MAIL_PORT, e,
         )
         return False
     except Exception as e:
+        print(f"[EMAIL] FAIL: Unexpected error for {to_email} (server={MAIL_SERVER} [{smtp_host}]): {e!r}", file=sys.stderr, flush=True)
         logger.error(
             "Unexpected error sending verification email to %s (server=%s [%s]): %r",
             to_email, MAIL_SERVER, smtp_host, e, exc_info=True,

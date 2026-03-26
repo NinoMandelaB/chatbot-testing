@@ -463,3 +463,95 @@ class TestResendVerificationFeedback:
             resp = client.post("/resend-verification", data={"username": "alice"})
         assert resp.status_code == 200
         assert b"new verification email has been sent" in resp.data.lower()
+
+
+class TestSmtpPrintLogging:
+    """Verify that send_verification_email emits print-level stdout/stderr lines."""
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP")
+    def test_success_path_prints_to_stdout(self, mock_smtp_cls, mock_resolve, capsys):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        from app import send_verification_email
+        result = send_verification_email("user@example.com", "a" * 64)
+        assert result is True
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] send_verification_email called" in captured.out
+        assert "[EMAIL] Resolving SMTP host" in captured.out
+        assert "[EMAIL] Connecting to SMTP server" in captured.out
+        assert "[EMAIL] STARTTLS on" in captured.out
+        assert "[EMAIL] STARTTLS completed" in captured.out
+        assert "[EMAIL] Connected. Logging in" in captured.out
+        assert "[EMAIL] Login successful. Sending email" in captured.out
+        assert "[EMAIL] SUCCESS" in captured.out
+
+    def test_missing_config_prints_to_stderr(self, monkeypatch, capsys):
+        import app as app_module
+        monkeypatch.setattr(app_module, "MAIL_SERVER", "")
+        app_module.send_verification_email("user@example.com", "a" * 64)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] send_verification_email called" in captured.out
+        assert "[EMAIL] FAIL: Mail not configured" in captured.err
+
+    def test_missing_credentials_prints_to_stderr(self, monkeypatch, capsys):
+        import app as app_module
+        monkeypatch.setattr(app_module, "MAIL_USERNAME", "")
+        monkeypatch.setattr(app_module, "MAIL_PASSWORD", "")
+        app_module.send_verification_email("user@example.com", "a" * 64)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] FAIL: Missing credentials" in captured.err
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP")
+    def test_auth_error_prints_to_stderr(self, mock_smtp_cls, mock_resolve, capsys):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+        mock_server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Auth failed")
+
+        from app import send_verification_email
+        send_verification_email("user@example.com", "a" * 64)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] FAIL: SMTP auth error" in captured.err
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP", side_effect=smtplib.SMTPException("Connection refused"))
+    def test_smtp_exception_prints_to_stderr(self, mock_smtp_cls, mock_resolve, capsys):
+        from app import send_verification_email
+        send_verification_email("user@example.com", "a" * 64)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] FAIL: SMTP error" in captured.err
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP", side_effect=RuntimeError("Something unexpected"))
+    def test_unexpected_error_prints_to_stderr(self, mock_smtp_cls, mock_resolve, capsys):
+        from app import send_verification_email
+        send_verification_email("user@example.com", "a" * 64)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] FAIL: Unexpected error" in captured.err
+
+    @patch("app.socket.getaddrinfo")
+    def test_resolve_ipv4_prints_on_success(self, mock_getaddrinfo, capsys):
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 587)),
+        ]
+        from app import _resolve_smtp_ipv4
+        _resolve_smtp_ipv4("smtp.example.com", 587)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] Resolved SMTP host smtp.example.com to IPv4 address 93.184.216.34" in captured.out
+
+    @patch("app.socket.getaddrinfo", side_effect=socket.gaierror("DNS failed"))
+    def test_resolve_ipv4_prints_on_dns_failure(self, mock_getaddrinfo, capsys):
+        from app import _resolve_smtp_ipv4
+        _resolve_smtp_ipv4("smtp.example.com", 587)
+
+        captured = capsys.readouterr()
+        assert "[EMAIL] IPv4 DNS resolution failed" in captured.err

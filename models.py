@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Text,
     String,
@@ -27,6 +28,10 @@ class User(Base):
     email_enc = Column("email_enc", LargeBinary, nullable=False)
     gender_enc = Column("gender_enc", LargeBinary, nullable=False)
     coins_enc = Column("coins_enc", LargeBinary, nullable=False)
+
+    # Email verification
+    is_verified = Column(Boolean, nullable=False, default=False, server_default="false")
+    verification_token = Column(String(64), unique=True, nullable=True)
 
     # E2EE key material
     kdf_salt = Column(String(32), nullable=True)

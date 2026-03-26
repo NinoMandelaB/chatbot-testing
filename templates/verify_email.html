@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Email Verification</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+    .box { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 420px; text-align: center; }
+    h2 { margin-top: 0; }
+    .success { color: #155724; }
+    .failure { color: #721c24; }
+    .msg { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 1rem; }
+    .msg.ok  { background: #d4edda; color: #155724; }
+    .msg.err { background: #f8d7da; color: #721c24; }
+    a { color: #1a73e8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    {% if success %}
+      <h2 class="success">Email Verified</h2>
+      <div class="msg ok">{{ message }}</div>
+      <p><a href="/login">Go to Login</a></p>
+    {% else %}
+      <h2 class="failure">Verification Failed</h2>
+      <div class="msg err">{{ message }}</div>
+      <p><a href="/login">Go to Login</a></p>
+    {% endif %}
+  </div>
+</body>
+</html>

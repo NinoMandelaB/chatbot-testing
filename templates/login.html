@@ -25,6 +25,13 @@
     {% if error %}
       <div class="error">{{ error }}</div>
     {% endif %}
+
+    {% if show_resend %}
+    <form method="POST" action="/resend-verification" style="margin-bottom: 15px;">
+      <input type="hidden" name="username" value="{{ username or '' }}"/>
+      <button type="submit" style="background: #f0f0f0; color: #333; border: 1px solid #ccc; font-size: 0.9rem; padding: 8px;">Resend verification email</button>
+    </form>
+    {% endif %}
     
     <form id="login-form" method="POST" action="/login">
       <div class="form-group">

@@ -2,6 +2,10 @@ import os
 import uuid
 import hmac
 import hashlib
+import secrets
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import requests as http_requests
 import redis as redis_lib
@@ -52,6 +56,16 @@ PAYSTACK_HEADERS = lambda: {
     "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
     "Content-Type": "application/json",
 }
+
+# -----------------------------------
+# Mail settings (Railway env vars)
+# -----------------------------------
+MAIL_SERVER = os.environ.get("MAIL_SERVER", "")
+MAIL_PORT = int(os.environ.get("MAIL_PORT", "587"))
+MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "")
+MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
+MAIL_FROM = os.environ.get("MAIL_FROM", "")
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:5000").rstrip("/")
 
 
 # -----------------------------------
@@ -115,6 +129,61 @@ def get_current_user(db):
     return db.query(User).filter(User.id == uid).first()
 
 
+def generate_verification_token():
+    """Return a cryptographically secure 64-char hex token."""
+    return secrets.token_hex(32)
+
+
+def send_verification_email(to_email: str, token: str) -> bool:
+    """
+    Send a verification email with a clickable link.
+    Returns True on success, False on failure (logged to stdout).
+    """
+    if not MAIL_SERVER or not MAIL_FROM:
+        print("WARN: Mail not configured — skipping verification email.")
+        return False
+
+    verify_url = f"{APP_BASE_URL}/verify-email/{token}"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Verify your email address"
+    msg["From"] = MAIL_FROM
+    msg["To"] = to_email
+
+    text_body = (
+        f"Welcome! Please verify your email by visiting this link:\n\n"
+        f"{verify_url}\n\n"
+        f"If you did not create an account, you can ignore this email."
+    )
+    html_body = (
+        f"<p>Welcome! Please verify your email by clicking the link below:</p>"
+        f'<p><a href="{verify_url}">{verify_url}</a></p>'
+        f"<p>If you did not create an account, you can ignore this email.</p>"
+    )
+
+    msg.attach(MIMEText(text_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        if MAIL_PORT == 465:
+            server = smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT, timeout=10)
+        else:
+            server = smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=10)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+
+        if MAIL_USERNAME and MAIL_PASSWORD:
+            server.login(MAIL_USERNAME, MAIL_PASSWORD)
+
+        server.sendmail(MAIL_FROM, to_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"ERROR sending verification email to {to_email}: {e!r}")
+        return False
+
+
 def log_transaction(db, user, delta: int, reason: str):
     """
     Write one auditable row to coin_transactions.
@@ -169,6 +238,8 @@ def register():
                 registered_coins=REGISTERED_INITIAL_COINS,
             )
 
+        token = generate_verification_token()
+
         user = User(
             username=username,
             password_hash=generate_password_hash(password),
@@ -179,6 +250,8 @@ def register():
         user.kdf_salt = kdf_salt
         user.encrypted_dek = encrypted_dek
         user.recovery_encrypted_dek = recovery_encrypted_dek
+        user.verification_token = token
+        # is_verified defaults to False
 
         db.add(user)
         db.flush()
@@ -187,10 +260,17 @@ def register():
         db.commit()
         db.refresh(user)
 
-        session["user_id"] = str(user.id)
-        resp = make_response(redirect(url_for("index")))
-        resp.delete_cookie(GUEST_COOKIE)
-        return resp
+        # Send verification email (best-effort; user can resend later)
+        send_verification_email(email, token)
+
+        # Do NOT log the user in yet — they must verify their email first.
+        # Redirect to login with a notice.
+        return render_template(
+            "login.html",
+            error="Registration successful! Please check your email and "
+                  "click the verification link before logging in.",
+            username=username,
+        )
 
     return render_template(
         "register.html",
@@ -214,6 +294,15 @@ def login():
                 username=username,
             )
 
+        if not user.is_verified:
+            return render_template(
+                "login.html",
+                error="Please verify your email before logging in. "
+                      "Check your inbox for a verification link.",
+                username=username,
+                show_resend=True,
+            )
+
         session["user_id"] = str(user.id)
         resp = make_response(redirect(url_for("index")))
         resp.delete_cookie(GUEST_COOKIE)
@@ -228,6 +317,65 @@ def logout():
     resp = make_response(redirect(url_for("login")))
     resp.delete_cookie(GUEST_COOKIE)
     return resp
+
+
+# -----------------------------------
+# Routes: email verification
+# -----------------------------------
+@app.route("/verify-email/<token>")
+def verify_email(token):
+    """Handle the verification link clicked from the user's inbox."""
+    db = g.db
+
+    if not token or len(token) != 64:
+        return render_template("verify_email.html", success=False,
+                               message="Invalid verification link.")
+
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        return render_template("verify_email.html", success=False,
+                               message="This verification link is invalid or has already been used.")
+
+    user.is_verified = True
+    user.verification_token = None  # clear token so it can't be reused
+    db.commit()
+
+    return render_template("verify_email.html", success=True,
+                           message="Your email has been verified! You can now log in.")
+
+
+@app.route("/resend-verification", methods=["POST"])
+def resend_verification():
+    """Resend the verification email for an unverified user."""
+    db = g.db
+    username = request.form.get("username", "").strip()
+
+    if not username:
+        return render_template("login.html", error="Username is required to resend.",
+                               username=username)
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        # Don't reveal whether username exists
+        return render_template("login.html",
+                               error="If that account exists, a new verification email has been sent.",
+                               username=username)
+
+    if user.is_verified:
+        return render_template("login.html",
+                               error="This account is already verified. Please log in.",
+                               username=username)
+
+    # Rotate the token for safety
+    new_token = generate_verification_token()
+    user.verification_token = new_token
+    db.commit()
+
+    send_verification_email(user.email, new_token)
+
+    return render_template("login.html",
+                           error="A new verification email has been sent. Please check your inbox.",
+                           username=username)
 
 
 # -----------------------------------

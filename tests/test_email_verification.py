@@ -7,6 +7,7 @@ Patches SMTP so no real email is sent during tests.
 
 import os
 import smtplib
+import socket
 import sys
 import uuid
 from unittest.mock import patch, MagicMock
@@ -245,9 +246,38 @@ class TestGenerateVerificationToken:
         int(token, 16)  # should not raise
 
 
+class TestResolveSmtpIpv4:
+    """Tests for the _resolve_smtp_ipv4 helper that forces IPv4 on Railway."""
+
+    @patch("app.socket.getaddrinfo")
+    def test_returns_ipv4_address(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 587)),
+        ]
+        from app import _resolve_smtp_ipv4
+        result = _resolve_smtp_ipv4("smtp.example.com", 587)
+        assert result == "93.184.216.34"
+        mock_getaddrinfo.assert_called_once_with(
+            "smtp.example.com", 587, socket.AF_INET, socket.SOCK_STREAM,
+        )
+
+    @patch("app.socket.getaddrinfo", side_effect=socket.gaierror("DNS failed"))
+    def test_falls_back_to_hostname_on_dns_failure(self, mock_getaddrinfo):
+        from app import _resolve_smtp_ipv4
+        result = _resolve_smtp_ipv4("smtp.example.com", 587)
+        assert result == "smtp.example.com"
+
+    @patch("app.socket.getaddrinfo", return_value=[])
+    def test_falls_back_to_hostname_on_empty_result(self, mock_getaddrinfo):
+        from app import _resolve_smtp_ipv4
+        result = _resolve_smtp_ipv4("smtp.example.com", 587)
+        assert result == "smtp.example.com"
+
+
 class TestSendVerificationEmail:
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
     @patch("smtplib.SMTP")
-    def test_sends_email_via_smtp(self, mock_smtp_cls):
+    def test_sends_email_via_smtp(self, mock_smtp_cls, mock_resolve):
         mock_server = MagicMock()
         mock_smtp_cls.return_value = mock_server
 
@@ -255,7 +285,8 @@ class TestSendVerificationEmail:
         result = send_verification_email("user@example.com", "a" * 64)
 
         assert result is True
-        mock_smtp_cls.assert_called_once_with("smtp.test.local", 587, timeout=10)
+        mock_resolve.assert_called_once_with("smtp.test.local", 587)
+        mock_smtp_cls.assert_called_once_with("1.2.3.4", 587, timeout=10)
         mock_server.starttls.assert_called_once()
         mock_server.login.assert_called_once_with("testuser", "testpass")
         mock_server.sendmail.assert_called_once()
@@ -267,8 +298,9 @@ class TestSendVerificationEmail:
         assert "verify-email/" in raw_msg
         assert "a" * 64 in raw_msg
 
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
     @patch("smtplib.SMTP", side_effect=Exception("Connection refused"))
-    def test_returns_false_on_smtp_error(self, mock_smtp_cls):
+    def test_returns_false_on_smtp_error(self, mock_smtp_cls, mock_resolve):
         from app import send_verification_email
         result = send_verification_email("user@example.com", "a" * 64)
         assert result is False
@@ -286,8 +318,9 @@ class TestSendVerificationEmail:
         result = app_module.send_verification_email("user@example.com", "a" * 64)
         assert result is False
 
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
     @patch("smtplib.SMTP")
-    def test_returns_false_on_auth_error(self, mock_smtp_cls):
+    def test_returns_false_on_auth_error(self, mock_smtp_cls, mock_resolve):
         mock_server = MagicMock()
         mock_smtp_cls.return_value = mock_server
         mock_server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Auth failed")

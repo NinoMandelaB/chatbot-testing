@@ -1,5 +1,6 @@
 import logging
 import os
+import socket
 import uuid
 import hmac
 import hashlib
@@ -159,6 +160,33 @@ def generate_verification_token():
     return secrets.token_hex(32)
 
 
+def _resolve_smtp_ipv4(host: str, port: int) -> str:
+    """Resolve *host* to an IPv4 address.
+
+    Railway does not support outbound IPv6.  When a mail-server hostname
+    resolves to both A and AAAA records the OS may try IPv6 first, which
+    fails with ``OSError [Errno 101] Network is unreachable``.
+
+    Returns the first IPv4 address found, or the original *host* string
+    unchanged if resolution fails (so the caller can still attempt to
+    connect and surface the real error).
+    """
+    try:
+        results = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        if results:
+            ipv4_addr = results[0][4][0]
+            logger.info(
+                "Resolved SMTP host %s to IPv4 address %s", host, ipv4_addr,
+            )
+            return ipv4_addr
+    except socket.gaierror as exc:
+        logger.warning(
+            "IPv4 DNS resolution failed for %s:%d — falling back to hostname: %r",
+            host, port, exc,
+        )
+    return host
+
+
 def send_verification_email(to_email: str, token: str) -> bool:
     """
     Send a verification email with a clickable link.
@@ -196,11 +224,14 @@ def send_verification_email(to_email: str, token: str) -> bool:
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
 
+    # Resolve to IPv4 to avoid IPv6 failures on Railway
+    smtp_host = _resolve_smtp_ipv4(MAIL_SERVER, MAIL_PORT)
+
     try:
         if MAIL_PORT == 465:
-            server = smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT, timeout=10)
+            server = smtplib.SMTP_SSL(smtp_host, MAIL_PORT, timeout=10)
         else:
-            server = smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=10)
+            server = smtplib.SMTP(smtp_host, MAIL_PORT, timeout=10)
             server.ehlo()
             server.starttls()
             server.ehlo()
@@ -208,24 +239,24 @@ def send_verification_email(to_email: str, token: str) -> bool:
         server.login(MAIL_USERNAME, MAIL_PASSWORD)
         server.sendmail(MAIL_FROM, to_email, msg.as_string())
         server.quit()
-        logger.info("Verification email sent to %s", to_email)
+        logger.info("Verification email sent to %s via %s", to_email, smtp_host)
         return True
     except smtplib.SMTPAuthenticationError as e:
         logger.error(
-            "SMTP authentication failed for %s (server=%s, port=%d, user=%s): %r",
-            to_email, MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, e,
+            "SMTP authentication failed for %s (server=%s [%s], port=%d, user=%s): %r",
+            to_email, MAIL_SERVER, smtp_host, MAIL_PORT, MAIL_USERNAME, e,
         )
         return False
     except smtplib.SMTPException as e:
         logger.error(
-            "SMTP error sending verification email to %s (server=%s, port=%d): %r",
-            to_email, MAIL_SERVER, MAIL_PORT, e,
+            "SMTP error sending verification email to %s (server=%s [%s], port=%d): %r",
+            to_email, MAIL_SERVER, smtp_host, MAIL_PORT, e,
         )
         return False
     except Exception as e:
         logger.error(
-            "Unexpected error sending verification email to %s: %r",
-            to_email, e, exc_info=True,
+            "Unexpected error sending verification email to %s (server=%s [%s]): %r",
+            to_email, MAIL_SERVER, smtp_host, e, exc_info=True,
         )
         return False
 

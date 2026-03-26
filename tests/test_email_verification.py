@@ -274,9 +274,79 @@ class TestResolveSmtpIpv4:
         assert result == "smtp.example.com"
 
 
+class TestIPv4SMTPClasses:
+    """Tests for _IPv4SMTP and _IPv4SMTP_SSL socket-level IPv4 enforcement."""
+
+    @patch("app.socket.getaddrinfo")
+    @patch("app.socket.socket")
+    def test_ipv4_smtp_get_socket_forces_af_inet(self, mock_socket_cls, mock_getaddrinfo):
+        """_IPv4SMTP._get_socket must call getaddrinfo with AF_INET."""
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 587)),
+        ]
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+
+        from app import _IPv4SMTP
+        smtp = _IPv4SMTP.__new__(_IPv4SMTP)
+        sock = smtp._get_socket("smtp.example.com", 587, 10)
+
+        mock_getaddrinfo.assert_called_once_with(
+            "smtp.example.com", 587, socket.AF_INET, socket.SOCK_STREAM,
+        )
+        mock_socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM, 6)
+        mock_sock.settimeout.assert_called_once_with(10)
+        mock_sock.connect.assert_called_once_with(("93.184.216.34", 587))
+        assert sock is mock_sock
+
+    @patch("app.socket.getaddrinfo", return_value=[])
+    def test_ipv4_smtp_raises_on_no_ipv4(self, mock_getaddrinfo):
+        """_IPv4SMTP._get_socket raises OSError when no IPv4 address found."""
+        from app import _IPv4SMTP
+        smtp = _IPv4SMTP.__new__(_IPv4SMTP)
+        with pytest.raises(OSError, match="No IPv4 address found"):
+            smtp._get_socket("smtp.example.com", 587, 10)
+
+    @patch("app.socket.getaddrinfo")
+    @patch("app.socket.socket")
+    def test_ipv4_smtp_ssl_get_socket_forces_af_inet(self, mock_socket_cls, mock_getaddrinfo):
+        """_IPv4SMTP_SSL._get_socket must call getaddrinfo with AF_INET."""
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 465)),
+        ]
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+        mock_tls_sock = MagicMock()
+
+        from app import _IPv4SMTP_SSL
+        smtp = _IPv4SMTP_SSL.__new__(_IPv4SMTP_SSL)
+        smtp.context = MagicMock()
+        smtp.context.wrap_socket.return_value = mock_tls_sock
+
+        sock = smtp._get_socket("smtp.example.com", 465, 10)
+
+        mock_getaddrinfo.assert_called_once_with(
+            "smtp.example.com", 465, socket.AF_INET, socket.SOCK_STREAM,
+        )
+        mock_sock.connect.assert_called_once_with(("93.184.216.34", 465))
+        smtp.context.wrap_socket.assert_called_once_with(
+            mock_sock, server_hostname="smtp.example.com",
+        )
+        assert sock is mock_tls_sock
+
+    @patch("app.socket.getaddrinfo", return_value=[])
+    def test_ipv4_smtp_ssl_raises_on_no_ipv4(self, mock_getaddrinfo):
+        """_IPv4SMTP_SSL._get_socket raises OSError when no IPv4 address found."""
+        from app import _IPv4SMTP_SSL
+        smtp = _IPv4SMTP_SSL.__new__(_IPv4SMTP_SSL)
+        smtp.context = None
+        with pytest.raises(OSError, match="No IPv4 address found"):
+            smtp._get_socket("smtp.example.com", 465, 10)
+
+
 class TestSendVerificationEmail:
     @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
-    @patch("smtplib.SMTP")
+    @patch("app._IPv4SMTP")
     def test_sends_email_via_smtp(self, mock_smtp_cls, mock_resolve):
         mock_server = MagicMock()
         mock_smtp_cls.return_value = mock_server
@@ -299,7 +369,7 @@ class TestSendVerificationEmail:
         assert "a" * 64 in raw_msg
 
     @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
-    @patch("smtplib.SMTP", side_effect=Exception("Connection refused"))
+    @patch("app._IPv4SMTP", side_effect=Exception("Connection refused"))
     def test_returns_false_on_smtp_error(self, mock_smtp_cls, mock_resolve):
         from app import send_verification_email
         result = send_verification_email("user@example.com", "a" * 64)
@@ -319,7 +389,7 @@ class TestSendVerificationEmail:
         assert result is False
 
     @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
-    @patch("smtplib.SMTP")
+    @patch("app._IPv4SMTP")
     def test_returns_false_on_auth_error(self, mock_smtp_cls, mock_resolve):
         mock_server = MagicMock()
         mock_smtp_cls.return_value = mock_server
@@ -328,6 +398,23 @@ class TestSendVerificationEmail:
         from app import send_verification_email
         result = send_verification_email("user@example.com", "a" * 64)
         assert result is False
+
+    @patch("app._resolve_smtp_ipv4", return_value="1.2.3.4")
+    @patch("app._IPv4SMTP_SSL")
+    def test_uses_ipv4_smtp_ssl_on_port_465(self, mock_ssl_cls, mock_resolve, monkeypatch):
+        """Port 465 should use _IPv4SMTP_SSL instead of _IPv4SMTP."""
+        import app as app_module
+        monkeypatch.setattr(app_module, "MAIL_PORT", 465)
+        mock_server = MagicMock()
+        mock_ssl_cls.return_value = mock_server
+
+        result = app_module.send_verification_email("user@example.com", "a" * 64)
+
+        assert result is True
+        mock_ssl_cls.assert_called_once_with("1.2.3.4", 465, timeout=10)
+        mock_server.login.assert_called_once()
+        mock_server.sendmail.assert_called_once()
+        mock_server.quit.assert_called_once()
 
 
 class TestRegistrationEmailFeedback:

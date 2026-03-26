@@ -187,6 +187,63 @@ def _resolve_smtp_ipv4(host: str, port: int) -> str:
     return host
 
 
+class _IPv4SMTP(smtplib.SMTP):
+    """SMTP subclass that forces all connections through IPv4 (``AF_INET``).
+
+    On Railway, outbound IPv6 is not supported.  Even when we resolve the
+    mail-server hostname to an IPv4 address up-front, ``smtplib.SMTP`` may
+    still call ``socket.getaddrinfo`` internally (e.g. during ``connect`` or
+    ``ehlo``) and pick an AAAA record.  Overriding ``_get_socket`` ensures
+    the underlying TCP socket is always ``AF_INET``, regardless of what the
+    OS resolver returns.
+    """
+
+    def _get_socket(self, host, port, timeout):
+        """Create and return an IPv4-only TCP socket."""
+        addrs = socket.getaddrinfo(
+            host, port, socket.AF_INET, socket.SOCK_STREAM,
+        )
+        if not addrs:
+            raise OSError(
+                f"No IPv4 address found for {host}:{port}"
+            )
+        af, socktype, proto, canonname, sa = addrs[0]
+        logger.info(
+            "SMTP socket connecting to %s:%d via IPv4 address %s",
+            host, port, sa[0],
+        )
+        sock = socket.socket(af, socktype, proto)
+        sock.settimeout(timeout)
+        sock.connect(sa)
+        return sock
+
+
+class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+    """SMTP_SSL subclass that forces all connections through IPv4."""
+
+    def _get_socket(self, host, port, timeout):
+        """Create an IPv4-only TCP socket and wrap it with TLS."""
+        import ssl as _ssl
+
+        addrs = socket.getaddrinfo(
+            host, port, socket.AF_INET, socket.SOCK_STREAM,
+        )
+        if not addrs:
+            raise OSError(
+                f"No IPv4 address found for {host}:{port}"
+            )
+        af, socktype, proto, canonname, sa = addrs[0]
+        logger.info(
+            "SMTP_SSL socket connecting to %s:%d via IPv4 address %s",
+            host, port, sa[0],
+        )
+        sock = socket.socket(af, socktype, proto)
+        sock.settimeout(timeout)
+        sock.connect(sa)
+        context = self.context if self.context else _ssl.create_default_context()
+        return context.wrap_socket(sock, server_hostname=host)
+
+
 def send_verification_email(to_email: str, token: str) -> bool:
     """
     Send a verification email with a clickable link.
@@ -229,9 +286,9 @@ def send_verification_email(to_email: str, token: str) -> bool:
 
     try:
         if MAIL_PORT == 465:
-            server = smtplib.SMTP_SSL(smtp_host, MAIL_PORT, timeout=10)
+            server = _IPv4SMTP_SSL(smtp_host, MAIL_PORT, timeout=10)
         else:
-            server = smtplib.SMTP(smtp_host, MAIL_PORT, timeout=10)
+            server = _IPv4SMTP(smtp_host, MAIL_PORT, timeout=10)
             server.ehlo()
             server.starttls()
             server.ehlo()

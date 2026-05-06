@@ -25,8 +25,7 @@ from flask import (
     make_response,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-from mistralai.client import Mistral
-from mistralai.client.models import UserMessage
+from openai import OpenAI
 
 from database import SessionLocal, run_migrations
 from models import User, ChatMessage, CoinTransaction
@@ -38,8 +37,10 @@ from models import User, ChatMessage, CoinTransaction
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-AGENT_ID = "ag_019cf8b9404e73c7ad980dfc212fbd26"
+# Cortex AI settings (set these as Railway environment variables)
+CORTECS_API_KEY = os.environ.get("CORTECS_API_KEY", "")
+CORTECS_MODEL = os.environ.get("CORTECS_MODEL", "qwen3.5-9b")
+CORTECS_BASE_URL = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
 
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "")
 PAYSTACK_PUBLIC_KEY = os.environ.get("PAYSTACK_PUBLIC_KEY", "")
@@ -146,8 +147,11 @@ def close_db_session(exception=None):
 # -----------------------------------
 # Helpers
 # -----------------------------------
-def get_mistral_client():
-    return Mistral(api_key=MISTRAL_API_KEY)
+def get_cortex_client():
+    """Return an OpenAI-compatible client pointed at Cortex AI."""
+    if not CORTECS_API_KEY:
+        raise RuntimeError("CORTECS_API_KEY environment variable is not set.")
+    return OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
 
 
 def get_current_user(db):
@@ -193,30 +197,16 @@ def _resolve_smtp_ipv4(host: str, port: int) -> str:
 
 
 class _IPv4SMTP(smtplib.SMTP):
-    """SMTP subclass that forces all connections through IPv4 (``AF_INET``).
-
-    On Railway, outbound IPv6 is not supported.  Even when we resolve the
-    mail-server hostname to an IPv4 address up-front, ``smtplib.SMTP`` may
-    still call ``socket.getaddrinfo`` internally (e.g. during ``connect`` or
-    ``ehlo``) and pick an AAAA record.  Overriding ``_get_socket`` ensures
-    the underlying TCP socket is always ``AF_INET``, regardless of what the
-    OS resolver returns.
-    """
+    """SMTP subclass that forces all connections through IPv4 (``AF_INET``)."""
 
     def _get_socket(self, host, port, timeout):
-        """Create and return an IPv4-only TCP socket."""
         addrs = socket.getaddrinfo(
             host, port, socket.AF_INET, socket.SOCK_STREAM,
         )
         if not addrs:
-            raise OSError(
-                f"No IPv4 address found for {host}:{port}"
-            )
+            raise OSError(f"No IPv4 address found for {host}:{port}")
         af, socktype, proto, canonname, sa = addrs[0]
-        logger.info(
-            "SMTP socket connecting to %s:%d via IPv4 address %s",
-            host, port, sa[0],
-        )
+        logger.info("SMTP socket connecting to %s:%d via IPv4 address %s", host, port, sa[0])
         sock = socket.socket(af, socktype, proto)
         sock.settimeout(timeout)
         sock.connect(sa)
@@ -227,21 +217,12 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
     """SMTP_SSL subclass that forces all connections through IPv4."""
 
     def _get_socket(self, host, port, timeout):
-        """Create an IPv4-only TCP socket and wrap it with TLS."""
         import ssl as _ssl
-
-        addrs = socket.getaddrinfo(
-            host, port, socket.AF_INET, socket.SOCK_STREAM,
-        )
+        addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
         if not addrs:
-            raise OSError(
-                f"No IPv4 address found for {host}:{port}"
-            )
+            raise OSError(f"No IPv4 address found for {host}:{port}")
         af, socktype, proto, canonname, sa = addrs[0]
-        logger.info(
-            "SMTP_SSL socket connecting to %s:%d via IPv4 address %s",
-            host, port, sa[0],
-        )
+        logger.info("SMTP_SSL socket connecting to %s:%d via IPv4 address %s", host, port, sa[0])
         sock = socket.socket(af, socktype, proto)
         sock.settimeout(timeout)
         sock.connect(sa)
@@ -250,10 +231,6 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
 
 
 def send_verification_email(to_email: str, token: str) -> bool:
-    """
-    Send a verification email with a clickable link.
-    Returns True on success, False on failure (logged via logger).
-    """
     print(f"[EMAIL] send_verification_email called for {to_email}", flush=True)
 
     if not MAIL_SERVER or not MAIL_FROM:
@@ -263,10 +240,7 @@ def send_verification_email(to_email: str, token: str) -> bool:
 
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print(f"[EMAIL] FAIL: Missing credentials (MAIL_USERNAME set={bool(MAIL_USERNAME)}, MAIL_PASSWORD set={bool(MAIL_PASSWORD)})", file=sys.stderr, flush=True)
-        logger.error(
-            "MAIL_USERNAME or MAIL_PASSWORD not set — cannot authenticate with SMTP server. "
-            "Email to %s will not be sent.", to_email,
-        )
+        logger.error("MAIL_USERNAME or MAIL_PASSWORD not set — cannot authenticate with SMTP server.")
         return False
 
     verify_url = f"{APP_BASE_URL}/verify-email/{token}"
@@ -292,7 +266,6 @@ def send_verification_email(to_email: str, token: str) -> bool:
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
 
-    # Resolve to IPv4 to avoid IPv6 failures on Railway
     print(f"[EMAIL] Resolving SMTP host {MAIL_SERVER}:{MAIL_PORT} to IPv4...", flush=True)
     smtp_host = _resolve_smtp_ipv4(MAIL_SERVER, MAIL_PORT)
 
@@ -303,51 +276,26 @@ def send_verification_email(to_email: str, token: str) -> bool:
         else:
             server = _IPv4SMTP(smtp_host, MAIL_PORT, timeout=10)
             server.ehlo()
-            print(f"[EMAIL] STARTTLS on {smtp_host}:{MAIL_PORT}...", flush=True)
             server.starttls()
-            print(f"[EMAIL] STARTTLS completed successfully", flush=True)
             server.ehlo()
-
-        print(f"[EMAIL] Connected. Logging in as {MAIL_USERNAME}...", flush=True)
         server.login(MAIL_USERNAME, MAIL_PASSWORD)
-        print(f"[EMAIL] Login successful. Sending email to {to_email}...", flush=True)
         server.sendmail(MAIL_FROM, to_email, msg.as_string())
         server.quit()
-        print(f"[EMAIL] SUCCESS: Verification email sent to {to_email} via {smtp_host}", flush=True)
+        print(f"[EMAIL] SUCCESS: Verification email sent to {to_email}", flush=True)
         logger.info("Verification email sent to %s via %s", to_email, smtp_host)
         return True
     except smtplib.SMTPAuthenticationError as e:
-        print(f"[EMAIL] FAIL: SMTP auth error for {to_email} (server={MAIL_SERVER} [{smtp_host}], port={MAIL_PORT}, user={MAIL_USERNAME}): {e!r}", file=sys.stderr, flush=True)
-        logger.error(
-            "SMTP authentication failed for %s (server=%s [%s], port=%d, user=%s): %r",
-            to_email, MAIL_SERVER, smtp_host, MAIL_PORT, MAIL_USERNAME, e,
-        )
+        logger.error("SMTP authentication failed for %s: %r", to_email, e)
         return False
     except smtplib.SMTPException as e:
-        print(f"[EMAIL] FAIL: SMTP error for {to_email} (server={MAIL_SERVER} [{smtp_host}], port={MAIL_PORT}): {e!r}", file=sys.stderr, flush=True)
-        logger.error(
-            "SMTP error sending verification email to %s (server=%s [%s], port=%d): %r",
-            to_email, MAIL_SERVER, smtp_host, MAIL_PORT, e,
-        )
+        logger.error("SMTP error sending to %s: %r", to_email, e)
         return False
     except Exception as e:
-        print(f"[EMAIL] FAIL: Unexpected error for {to_email} (server={MAIL_SERVER} [{smtp_host}]): {e!r}", file=sys.stderr, flush=True)
-        logger.error(
-            "Unexpected error sending verification email to %s (server=%s [%s]): %r",
-            to_email, MAIL_SERVER, smtp_host, e, exc_info=True,
-        )
+        logger.error("Unexpected error sending email to %s: %r", to_email, e, exc_info=True)
         return False
 
 
 def log_transaction(db, user, delta: int, reason: str):
-    """
-    Write one auditable row to coin_transactions.
-    Encrypted with the SERVER master key — readable by business owner,
-    NOT by the user's E2EE DEK.
-
-    delta > 0 = credit, delta < 0 = debit.
-    Caller must db.commit() after calling this.
-    """
     tx = CoinTransaction(user_id=user.id)
     tx.delta = delta
     tx.reason = reason
@@ -406,7 +354,6 @@ def register():
         user.encrypted_dek = encrypted_dek
         user.recovery_encrypted_dek = recovery_encrypted_dek
         user.verification_token = token
-        # is_verified defaults to False
 
         db.add(user)
         db.flush()
@@ -415,11 +362,8 @@ def register():
         db.commit()
         db.refresh(user)
 
-        # Send verification email and give the user accurate feedback
         email_sent = send_verification_email(email, token)
 
-        # Do NOT log the user in yet — they must verify their email first.
-        # Redirect to login with a notice.
         if email_sent:
             return render_template(
                 "login.html",
@@ -452,17 +396,12 @@ def login():
 
         user = db.query(User).filter(User.username == username).first()
         if not user or not check_password_hash(user.password_hash, password):
-            return render_template(
-                "login.html",
-                error="Invalid username or password.",
-                username=username,
-            )
+            return render_template("login.html", error="Invalid username or password.", username=username)
 
         if not user.is_verified:
             return render_template(
                 "login.html",
-                error="Please verify your email before logging in. "
-                      "Check your inbox for a verification link.",
+                error="Please verify your email before logging in.",
                 username=username,
                 show_resend=True,
             )
@@ -488,12 +427,10 @@ def logout():
 # -----------------------------------
 @app.route("/verify-email/<token>")
 def verify_email(token):
-    """Handle the verification link clicked from the user's inbox."""
     db = g.db
 
     if not token or len(token) != 64:
-        return render_template("verify_email.html", success=False,
-                               message="Invalid verification link.")
+        return render_template("verify_email.html", success=False, message="Invalid verification link.")
 
     user = db.query(User).filter(User.verification_token == token).first()
     if not user:
@@ -501,7 +438,7 @@ def verify_email(token):
                                message="This verification link is invalid or has already been used.")
 
     user.is_verified = True
-    user.verification_token = None  # clear token so it can't be reused
+    user.verification_token = None
     db.commit()
 
     return render_template("verify_email.html", success=True,
@@ -510,27 +447,22 @@ def verify_email(token):
 
 @app.route("/resend-verification", methods=["POST"])
 def resend_verification():
-    """Resend the verification email for an unverified user."""
     db = g.db
     username = request.form.get("username", "").strip()
 
     if not username:
-        return render_template("login.html", error="Username is required to resend.",
-                               username=username)
+        return render_template("login.html", error="Username is required to resend.", username=username)
 
     user = db.query(User).filter(User.username == username).first()
     if not user:
-        # Don't reveal whether username exists
         return render_template("login.html",
                                error="If that account exists, a new verification email has been sent.",
                                username=username)
 
     if user.is_verified:
-        return render_template("login.html",
-                               error="This account is already verified. Please log in.",
+        return render_template("login.html", error="This account is already verified. Please log in.",
                                username=username)
 
-    # Rotate the token for safety
     new_token = generate_verification_token()
     user.verification_token = new_token
     db.commit()
@@ -543,8 +475,7 @@ def resend_verification():
                                username=username)
     else:
         return render_template("login.html",
-                               error="We couldn't send the verification email right now. "
-                                     "Please try again later or contact support.",
+                               error="We couldn't send the verification email right now. Please try again later.",
                                username=username,
                                show_resend=True)
 
@@ -560,19 +491,12 @@ def delete_account():
         return jsonify({"error": "Not authenticated"}), 401
 
     try:
-        db.query(CoinTransaction).filter(
-            CoinTransaction.user_id == user.id
-        ).delete(synchronize_session=False)
-
-        db.query(ChatMessage).filter(
-            ChatMessage.user_id == user.id
-        ).delete(synchronize_session=False)
-
+        db.query(CoinTransaction).filter(CoinTransaction.user_id == user.id).delete(synchronize_session=False)
+        db.query(ChatMessage).filter(ChatMessage.user_id == user.id).delete(synchronize_session=False)
         db.delete(user)
         db.commit()
     except Exception as e:
         db.rollback()
-        print("ERROR deleting account:", repr(e))
         return jsonify({"error": f"Could not delete account: {e}"}), 500
 
     session.clear()
@@ -583,10 +507,6 @@ def delete_account():
 
 @app.route("/api/delete-session", methods=["POST"])
 def delete_session():
-    """
-    Delete one conversation identified by chat_session_id
-    for the currently logged-in user.
-    """
     db = g.db
     user = get_current_user(db)
     if not user:
@@ -626,11 +546,7 @@ def kdf_params():
     user = db.query(User).filter(User.username == username).first()
 
     if not user:
-        return jsonify({
-            "salt": "0" * 32,
-            "encrypted_dek": "",
-            "recovery_encrypted_dek": "",
-        })
+        return jsonify({"salt": "0" * 32, "encrypted_dek": "", "recovery_encrypted_dek": ""})
 
     return jsonify({
         "salt": user.kdf_salt,
@@ -644,11 +560,6 @@ def kdf_params():
 # -----------------------------------
 @app.route("/api/save-message", methods=["POST"])
 def save_message():
-    """
-    Store a single browser-encrypted message.
-    content_enc = hex string: iv:ciphertext — opaque to the server.
-    chat_session_id groups messages into one conversation.
-    """
     db = g.db
     user = get_current_user(db)
     if not user:
@@ -676,10 +587,6 @@ def save_message():
 
 @app.route("/api/messages")
 def get_messages():
-    """
-    Return all encrypted message blobs for the logged-in user,
-    grouped by chat_session_id so the browser can show a history list.
-    """
     db = g.db
     user = get_current_user(db)
     if not user:
@@ -694,12 +601,9 @@ def get_messages():
 
     result = []
     for m in msgs:
-        # content_enc may come back as memoryview / bytes from PostgreSQL
-        # if the DB column is BYTEA. Coerce to str for JSON serialization.
         raw = m.content_enc
         if isinstance(raw, (memoryview, bytes, bytearray)):
             raw = bytes(raw).decode("utf-8", errors="replace")
-
         result.append({
             "role": m.role,
             "content_enc": raw,
@@ -775,34 +679,33 @@ def chat():
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
 
-    if not MISTRAL_API_KEY:
-        return jsonify({"error": "MISTRAL_API_KEY not set"}), 500
+    if not CORTECS_API_KEY:
+        return jsonify({"error": "CORTECS_API_KEY not set"}), 500
+
+    # Build conversation history if provided (optional, for multi-turn)
+    history = data.get("history", [])
+    messages = list(history) + [{"role": "user", "content": user_message}]
 
     try:
-        client = get_mistral_client()
-
-        response = client.agents.complete(
-            messages=[UserMessage(content=user_message)],
-            agent_id=AGENT_ID,
-            max_tokens=512,
+        client = get_cortex_client()
+        response = client.chat.completions.create(
+            model=CORTECS_MODEL,
+            messages=messages,
+            max_tokens=1024,
+            stream=False,
         )
 
         reply = ""
-        if getattr(response, "choices", None):
-            msg = response.choices[0].message
-            content = getattr(msg, "content", "")
-            if isinstance(content, str):
-                reply = content
-            elif isinstance(content, list):
-                reply = "".join(str(p) for p in content if p)
+        if response.choices:
+            reply = response.choices[0].message.content or ""
 
-        usage = getattr(response, "usage", None)
+        usage = response.usage
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
         total_tokens = getattr(usage, "total_tokens", None) if usage else None
 
         if not reply:
-            reply = "Agent returned an empty response."
+            reply = "Model returned an empty response."
 
         cost = total_tokens if isinstance(total_tokens, int) and total_tokens > 0 else 1
 
@@ -815,7 +718,6 @@ def chat():
         else:
             current_coins = max(0, user.coins - cost)
             user.coins = current_coins
-
             log_transaction(
                 db,
                 user,
@@ -918,12 +820,8 @@ def payment_callback():
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             user.coins += pack["coins"]
-            log_transaction(
-                db,
-                user,
-                +pack["coins"],
-                f"paystack_purchase pack={pack_id} ref={reference} kes={pack['price_kes']}",
-            )
+            log_transaction(db, user, +pack["coins"],
+                            f"paystack_purchase pack={pack_id} ref={reference} kes={pack['price_kes']}")
             db.commit()
 
     return redirect(url_for("index") + "?payment=success")
@@ -957,12 +855,8 @@ def payment_webhook():
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             user.coins += pack["coins"]
-            log_transaction(
-                db,
-                user,
-                +pack["coins"],
-                f"paystack_webhook pack={pack_id} ref={tx.get('reference', 'webhook')} kes={pack['price_kes']}",
-            )
+            log_transaction(db, user, +pack["coins"],
+                            f"paystack_webhook pack={pack_id} ref={tx.get('reference', 'webhook')} kes={pack['price_kes']}")
             db.commit()
 
     return "", 200

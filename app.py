@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import socket
 import sys
 import uuid
@@ -45,7 +46,7 @@ CORTECS_BASE_URL = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "")
 PAYSTACK_PUBLIC_KEY = os.environ.get("PAYSTACK_PUBLIC_KEY", "")
 
-GUEST_INITIAL_COINS = 9_000_000
+GUEST_INITIAL_COINS = 9000000
 REGISTERED_INITIAL_COINS = 15000
 
 GUEST_COOKIE = "guest_token"
@@ -236,6 +237,45 @@ def get_current_user(db):
 def generate_verification_token():
     """Return a cryptographically secure 64-char hex token."""
     return secrets.token_hex(32)
+
+
+def extract_reply(choice) -> str:
+    """
+    Robustly extract the assistant's text from a chat completion choice.
+
+    Qwen3 models with /no_think may return:
+      - message.content  populated normally (happy path)
+      - message.content  as None / empty string when the model emits
+        only a <think>...</think> block that the API strips
+      - message.reasoning_content  with the actual answer text
+        (some Cortecs API versions surface it here instead)
+
+    We try in order:
+      1. message.content  — strip any residual <think> tags
+      2. message.reasoning_content  — same stripping
+      3. Hard fallback: tell the caller nothing came back
+    """
+    msg = choice.message
+
+    def _clean(text: str) -> str:
+        """Remove <think>...</think> blocks and leading/trailing whitespace."""
+        if not text:
+            return ""
+        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        return cleaned.strip()
+
+    # 1. Try message.content
+    content = _clean(getattr(msg, "content", None) or "")
+    if content:
+        return content
+
+    # 2. Try reasoning_content (Cortecs-specific fallback)
+    reasoning = _clean(getattr(msg, "reasoning_content", None) or "")
+    if reasoning:
+        return reasoning
+
+    # 3. Hard fallback
+    return "(no response)"
 
 
 def _resolve_smtp_ipv4(host: str, port: int) -> str:
@@ -772,12 +812,11 @@ def chat():
             messages=messages,
             max_tokens=1024,
             stream=False,
-            extra_body={"reasoning_effort": "low"},
         )
 
         reply = ""
         if response.choices:
-            reply = response.choices[0].message.content or ""
+            reply = extract_reply(response.choices[0])
 
         usage = response.usage
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None

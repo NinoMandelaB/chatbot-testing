@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import socket
 import sys
 import uuid
@@ -236,6 +237,42 @@ def get_current_user(db):
 def generate_verification_token():
     """Return a cryptographically secure 64-char hex token."""
     return secrets.token_hex(32)
+
+
+def extract_reply(choice) -> str:
+    """
+    Robustly extract the assistant's text from a chat completion choice.
+
+    Qwen3 models with /no_think may return:
+      - message.content  populated normally (happy path)
+      - message.content  as None / empty string when the model emits
+        only a <think>...</think> block that the API strips
+      - message.reasoning_content  with the actual answer text
+        (some Cortecs API versions surface it here instead)
+
+    We try in order:
+      1. message.content  — strip any residual <think> tags
+      2. message.reasoning_content  — same stripping
+      3. Hard fallback: tell the caller nothing came back
+    """
+    msg = choice.message
+
+    def _clean(text: str) -> str:
+        """Remove <think>...</think> blocks and strip surrounding whitespace."""
+        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        return cleaned.strip()
+
+    content = getattr(msg, "content", None) or ""
+    cleaned_content = _clean(content)
+    if cleaned_content:
+        return cleaned_content
+
+    reasoning = getattr(msg, "reasoning_content", None) or ""
+    cleaned_reasoning = _clean(reasoning)
+    if cleaned_reasoning:
+        return cleaned_reasoning
+
+    return ""
 
 
 def _resolve_smtp_ipv4(host: str, port: int) -> str:
@@ -776,7 +813,7 @@ def chat():
 
         reply = ""
         if response.choices:
-            reply = response.choices[0].message.content or ""
+            reply = extract_reply(response.choices[0])
 
         usage = response.usage
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
@@ -784,7 +821,14 @@ def chat():
         total_tokens = getattr(usage, "total_tokens", None) if usage else None
 
         if not reply:
-            reply = "Model returned an empty response."
+            # Log the raw response to help diagnose future empty replies
+            print(
+                "[CHAT] Empty reply after extraction. "
+                f"finish_reason={response.choices[0].finish_reason if response.choices else 'no choices'} "
+                f"usage={usage}",
+                flush=True,
+            )
+            reply = "I'm here — what would you like to talk about?"
 
         cost = total_tokens if isinstance(total_tokens, int) and total_tokens > 0 else 1
 

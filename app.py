@@ -812,6 +812,7 @@ def chat():
             messages=messages,
             max_tokens=1024,
             stream=False,
+            extra_body={"reasoning_effort": "low"},
         )
 
         reply = ""

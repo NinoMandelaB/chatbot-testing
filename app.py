@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 CORTECS_API_KEY  = os.environ.get("CORTECS_API_KEY", "")
 CORTECS_BASE_URL = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
-SYSTEM_PROMPT    = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant.")
+DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant.")
 
 
 def _clean(text):
@@ -48,6 +48,7 @@ def chat():
     model            = data.get("model", "qwen3.5-9b")
     extra_body_raw   = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
     reasoning_effort = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
+    system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
     history          = data.get("history", [])
 
     # Merge reasoning_effort into extra_body if provided
@@ -56,7 +57,7 @@ def chat():
         extra_body_raw["reasoning_effort"] = reasoning_effort
 
     messages = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
+        [{"role": "system", "content": system_prompt}]
         + list(history)
         + [{"role": "user", "content": user_message}]
     )

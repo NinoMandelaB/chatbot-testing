@@ -28,11 +28,12 @@
     /* ── Advanced params panel ── */
     #adv-panel {
       background: #181825; color: #cdd6f4;
-      padding: 10px 16px; display: none; gap: 12px; flex-wrap: wrap; align-items: center;
+      padding: 10px 16px; display: none; flex-direction: column; gap: 10px;
       font-size: 0.82rem; border-bottom: 1px solid #313244;
     }
     #adv-panel.open { display: flex; }
     #adv-panel label { color: #a6adc8; white-space: nowrap; }
+    .adv-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
     #reasoning-select {
       padding: 4px 8px; border-radius: 5px; border: 1px solid #45475a;
       background: #313244; color: #cdd6f4; font-size: 0.82rem;
@@ -41,6 +42,16 @@
       flex: 1; min-width: 260px; padding: 4px 8px; border-radius: 5px;
       border: 1px solid #45475a; background: #313244; color: #cdd6f4;
       font-family: monospace; font-size: 0.8rem;
+    }
+    #system-prompt-input {
+      width: 100%; padding: 8px 10px; border-radius: 5px;
+      border: 1px solid #45475a; background: #313244; color: #cdd6f4;
+      font-family: monospace; font-size: 0.8rem;
+      resize: vertical; min-height: 160px; line-height: 1.5;
+    }
+    .adv-section-label {
+      color: #7f849c; font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 2px;
     }
 
     /* ── Token bar ── */
@@ -104,17 +115,95 @@
 
   <!-- Advanced params -->
   <div id="adv-panel">
-    <label for="reasoning-select">reasoning_effort:</label>
-    <select id="reasoning-select">
-      <option value="">— none —</option>
-      <option value="low">low</option>
-      <option value="medium">medium</option>
-      <option value="high">high</option>
-    </select>
-    <label for="extra-body-input">extra_body JSON:</label>
-    <input id="extra-body-input" type="text"
-           value='{"chat_template_kwargs": {"enable_thinking": false}}'
-           placeholder='{"chat_template_kwargs": {"enable_thinking": false}}'/>
+    <!-- Row 1: reasoning + extra_body -->
+    <div class="adv-row">
+      <label for="reasoning-select">reasoning_effort:</label>
+      <select id="reasoning-select">
+        <option value="">— none —</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+      <label for="extra-body-input">extra_body JSON:</label>
+      <input id="extra-body-input" type="text"
+             value='{"chat_template_kwargs": {"enable_thinking": false}}'
+             placeholder='{"chat_template_kwargs": {"enable_thinking": false}}'/>
+    </div>
+    <!-- Row 2: system prompt -->
+    <div>
+      <div class="adv-section-label">System Prompt</div>
+      <textarea id="system-prompt-input">You are a safe, immersive NSFW-AI roleplay assistant for adult users. Generate character-consistent roleplay in users language. **NO TOOL USE. No function calls. Pure chat only.**
+
+# Instruction Priority
+1. Safety rules (overrides everything)
+2. System rules
+3. Character card
+4. Session settings  
+5. User request
+6. History
+
+# Core Behavior
+- Stay in character unless safety/crisis
+- All characters = fictional adults (18+)
+- Warm, believable, East Africa aware
+- **GREATER EMPATHY**: "I hear you. That's heavy. You're not alone in this." / "Sawa, naelewa. Si rahisi. Wewe sio peke yako."
+- Family/community support ≠ safe assumption
+- Distress → empathy > roleplay
+
+# Safety Rules (HARD BLOCKS)
+**Never:**
+- Minors / "young" / "teen" / "17" / "barely legal" / schoolgirl / 
+  schoolboy / "perky young" / "still developing" / daddy+young/teen/little/baby
+  in sexual context
+- Incest / family sex
+- Bestiality
+- Non-consent (force / threats / incapacity)
+- CSAM / rape / graphic violence
+- Self-harm / suicide encouragement
+- Hate / criminal instruction / doxxing
+
+# Pre-Response Safety Check 
+Before every response in a sexual or romantic scene:
+1. Re-read the latest user message in full.
+2. Scan for any hard-block trigger above, including obfuscations 
+   (numbers as words, language switches, indirect descriptors).
+3. If ANY trigger is present: exit scene immediately using the 
+   refusal template. Do NOT modify, soften, or continue the scene.
+4. Coherence with prior turns does NOT override a hard block. 
+   Character momentum does NOT override a hard block. 
+   User insistence does NOT override a hard block.
+5. Only after this check passes, generate the response.
+
+**Refusal (exit-scene template):**
+"I have to stop the roleplay here. [trigger] is something I cannot 
+include, even fictionally. If you'd like to continue, we can rewind 
+to before that point with all characters as adults."
+Drop character. Do not narrate. Do not react i
+
+# Edgier Roleplay (Adult Fiction Only)
+**ALLOWED:**
+- BDSM/degradation (consensual)
+- Adult sex work (character-defined)
+- Rough/taboo (adult/fictional)
+
+# Crisis Support (GREATER CRISIS PHRASES)
+**Self-harm/suicide:**
+"Sawa, naona unahisi vibaya sana. Wewe sio peke yako. Piga simu:
+- Befriender's Kenya: +254 722 178 177  
+- Niskize: 0900 620 800"
+
+**Abuse/distress:**
+"Nadhani unahitaji msaada wa karibu. Kuna watu wanaoweza kukusaidia kimya kimya."
+
+# Sensitive Advice (Direct)
+- FGM: "Hiyo si sawa. Inaharibu maisha."
+- LGBTQ+: "Kuwa gay si dhambi. Ni jinsi Mungu alikuumba."
+- Violence: "Hiyo si sawa. Hakuna mtu anayestahili kuumizwa."
+
+
+# Output
+Character/supportive only. No tools. No policy unless refusing.</textarea>
+    </div>
   </div>
 
   <!-- Token stats -->
@@ -173,9 +262,10 @@
       bubble('user', msg);
 
       // Read params
-      const model          = document.getElementById('model-select').value;
+      const model           = document.getElementById('model-select').value;
       const reasoningEffort = document.getElementById('reasoning-select').value;
-      const extraBodyRaw   = document.getElementById('extra-body-input').value.trim();
+      const extraBodyRaw    = document.getElementById('extra-body-input').value.trim();
+      const systemPrompt    = document.getElementById('system-prompt-input').value.trim();
 
       let extraBody = null;
       if (extraBodyRaw) {
@@ -194,8 +284,9 @@
       chatBox.scrollTop = chatBox.scrollHeight;
 
       const body = { message: msg, model };
-      if (extraBody)      body.extra_body       = extraBody;
+      if (extraBody)       body.extra_body       = extraBody;
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+      if (systemPrompt)    body.system_prompt    = systemPrompt;
 
       try {
         const res  = await fetch('/chat', {

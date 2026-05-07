@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Mistral Agent Chat</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: sans-serif; margin: 0; background: #f5f5f5; display: flex; height: 100vh; overflow: hidden; }
+
+    /* Sidebar */
+    #sidebar { width: 240px; min-width: 240px; background: #1e1e2e; color: #cdd6f4; display: flex; flex-direction: column; }
+    #sidebar-header { padding: 16px 14px 10px; font-size: 0.85rem; color: #a6adc8; text-transform: uppercase; letter-spacing: .06em; }
+    #new-chat-btn { margin: 0 10px 10px; padding: 9px; background: #313244; border: none; border-radius: 8px;
+                    color: #cdd6f4; cursor: pointer; font-size: 0.9rem; text-align: left; }
+    #new-chat-btn:hover { background: #45475a; }
+    #history-list { flex: 1; overflow-y: auto; padding: 0 6px; }
+    .history-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.82rem;
+                    color: #bac2de; margin-bottom: 2px; }
+    .history-item:hover  { background: #313244; }
+    .history-item.active { background: #45475a; color: #cdd6f4; }
+    .history-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-date { font-size: 0.7rem; color: #6c7086; margin-top: 1px; }
+    .history-delete { background: transparent; border: none; color: #f38ba8; cursor: pointer; font-size: 0.95rem; padding: 0 0 0 8px; }
+
+    /* Main */
+    #main { flex: 1; display: flex; flex-direction: column; max-width: 760px; margin: 0 auto; padding: 0 16px; width: 100%; }
+    #top-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 0 6px; font-size: 0.95rem; }
+    #token-summary { font-size: 0.85rem; color: #666; margin-bottom: 6px; }
+    #coins-bar { font-size: 0.9rem; color: #333; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #coins-bar input { width: 80px; padding: 4px; border: 1px solid #ddd; border-radius: 4px; }
+    #packs { margin-bottom: 10px; font-size: 0.85rem; }
+    #packs button { padding: 5px 9px; font-size: 0.82rem; margin-right: 4px; margin-top: 4px; }
+    #chat-box { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px;
+                flex: 1; overflow-y: auto; margin-bottom: 12px; min-height: 0; }
+    .msg { margin: 8px 0; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .user  { color: #1a73e8; font-weight: bold; }
+    .bot   { color: #333; font-weight: bold; }
+    #input-row { display: flex; gap: 8px; padding-bottom: 16px; }
+    #user-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem; }
+    button { padding: 10px 18px; background: #1a73e8; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-danger { background: #c0392b !important; }
+    .btn-danger:hover { background: #a93226 !important; }
+    a { color: #1a73e8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Overlays */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; justify-content: center; align-items: center; }
+    .overlay.show { display: flex; }
+    .overlay-box { background: white; border-radius: 12px; padding: 32px 28px; max-width: 420px; width: 90%; text-align: center; }
+    .overlay-box h2 { margin-top: 0; font-size: 1.3rem; color: #333; }
+    .overlay-box p  { color: #555; font-size: 0.95rem; line-height: 1.5; }
+    .overlay-box input { width: 100%; padding: 9px 10px; border: 1px solid #ddd; border-radius: 6px; margin-top: 8px; }
+    .overlay-box .bonus { font-size: 1.1rem; font-weight: bold; color: #1a73e8; margin: 12px 0; }
+    .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+    .btn-row a, .btn-row button { padding: 10px 22px; border-radius: 6px; font-size: 1rem; font-weight: bold; text-decoration: none; cursor: pointer; border: none; }
+    .btn-primary   { background: #1a73e8; color: white !important; }
+    .btn-secondary { background: #f0f0f0; color: #333 !important; border: 1px solid #ccc !important; }
+    .notice-success { background: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 0.9rem; }
+    .notice-error   { background: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 0.9rem; }
+    #loading-history { font-size: 0.85rem; color: #888; padding: 8px 12px; }
+
+    /* Model params bar */
+    #model-params { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; font-size: 0.85rem; }
+    #model-params label { color: #555; font-weight: 600; white-space: nowrap; }
+    #model-select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; background: white; cursor: pointer; max-width: 220px; }
+    #reasoning-select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; background: white; cursor: pointer; }
+    #extra-body-input { flex: 1; min-width: 180px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.82rem; font-family: monospace; color: #333; }
+    #model-params details { width: 100%; }
+    #model-params summary { cursor: pointer; color: #1a73e8; font-size: 0.82rem; user-select: none; }
+    .params-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  </style>
+</head>
+<body>
+
+  {% if not is_guest %}
+  <div id="sidebar">
+    <div id="sidebar-header">💬 Conversations</div>
+    <button id="new-chat-btn" onclick="startNewChat()">＋ New chat</button>
+    <div id="history-list">
+      <div id="loading-history">Loading history…</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Zero-coins overlay -->
+  <div id="overlay-coins" class="overlay">
+    <div class="overlay-box">
+      {% if is_guest %}
+        <h2>🪙 You've used all your free coins!</h2>
+        <p>Create a free account to keep chatting.</p>
+        <div class="bonus">🎁 Get 15,000 coins instantly on registration!</div>
+        <div class="btn-row">
+          <a href="/register" class="btn-primary">Register (free)</a>
+          <a href="/login" class="btn-secondary">Login</a>
+        </div>
+      {% else %}
+        <h2>🪙 You've run out of coins!</h2>
+        <p>Top up your balance to keep chatting.</p>
+        <div class="btn-row">
+          <button class="btn-primary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('small')">Small — KES 70</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('regular')">Regular — KES 300</button>
+          <button class="btn-secondary" onclick="document.getElementById('overlay-coins').classList.remove('show'); payPack('heavy')">Heavy-use — KES 700</button>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Delete account overlay -->
+  <div id="overlay-delete" class="overlay">
+    <div class="overlay-box">
+      <h2>⚠️ Delete account?</h2>
+      <p>Permanently deletes your account, all chat history and coins. Cannot be undone.</p>
+      <div class="btn-row">
+        <button class="btn-danger btn-primary" onclick="confirmDelete()">Yes, delete everything</button>
+        <button class="btn-secondary" onclick="document.getElementById('overlay-delete').classList.remove('show')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unlock history overlay -->
+  <div id="overlay-unlock" class="overlay">
+    <div class="overlay-box">
+      <h2>🔐 Unlock your history</h2>
+      <p>Enter your password to decrypt your chat history on this device. Your password never leaves the browser.</p>
+      <input id="unlock-username" type="text" placeholder="Username" value="{{ username if not is_guest else '' }}"/>
+      <input id="unlock-password" type="password" placeholder="Password"/>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="doUnlock()">Unlock</button>
+        <button class="btn-secondary" onclick="document.getElementById('overlay-unlock').classList.remove('show')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main area -->
+  <div id="main">
+    <div id="top-bar">
+      <div>
+        {% if is_guest %}Chatting as <strong>Guest</strong>
+        {% else %}Logged in as <strong>{{ username }}</strong>{% endif %}
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;">
+        {% if is_guest %}
+          <a href="/register">Register</a>
+          <a href="/login">Login</a>
+        {% else %}
+          <a href="/logout" onclick="clearDek()">Logout</a>
+          <button class="btn-danger" style="padding:6px 12px;font-size:0.82rem;"
+                  onclick="document.getElementById('overlay-delete').classList.add('show')">
+            Delete account
+          </button>
+        {% endif %}
+      </div>
+    </div>
+
+    <h1 style="font-size:1.3rem;color:#333;margin:0 0 6px;">🤖 Mistral Agent Chat</h1>
+
+    {% if request.args.get('payment') == 'success' %}
+      <div class="notice-success">✅ Payment successful! Coins credited.</div>
+    {% elif request.args.get('payment') == 'failed' %}
+      <div class="notice-error">❌ Payment failed. Please try again.</div>
+    {% endif %}
+
+    <div id="token-summary">
+      Tokens — prompt: <span id="sum-prompt">0</span>,
+      completion: <span id="sum-completion">0</span>,
+      total: <span id="sum-total">0</span>
+    </div>
+
+    <div id="coins-bar">
+      Coins: <strong id="coins-value">{{ coins }}</strong>
+      {% if not is_guest %}
+        <input id="buy-amount" type="number" min="1" placeholder="Amount (test)"/>
+        <button id="buy-btn" type="button" onclick="buyCoins()">Add coins (test)</button>
+      {% endif %}
+    </div>
+
+    {% if not is_guest %}
+    <div id="packs">
+      <strong>Buy via Paystack:</strong>
+      <button type="button" onclick="payPack('small')">5,000 — KES 70</button>
+      <button type="button" onclick="payPack('regular')">30,000 — KES 300</button>
+      <button type="button" onclick="payPack('heavy')">80,000 — KES 700</button>
+    </div>
+    {% endif %}
+
+    <!-- Model selector + advanced params -->
+    <div id="model-params">
+      <label for="model-select">Model:</label>
+      <select id="model-select">
+        <option value="qwen3.5-9b" selected>qwen3.5-9b</option>
+        <option value="qwen3-30b-a3b-instruct-2507">qwen3-30b-a3b-instruct-2507</option>
+        <option value="llama-3.3-70b-instruct">llama-3.3-70b-instruct</option>
+        <option value="llama-4-maverick">llama-4-maverick</option>
+        <option value="gemma-3-27b-it">gemma-3-27b-it</option>
+        <option value="mistral-small-2603">mistral-small-2603</option>
+        <option value="mistral-nemo-instruct-2407">mistral-nemo-instruct-2407</option>
+        <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+        <option value="minimax-m2">minimax-m2</option>
+        <option value="nvidia-nemotron-3-nano-omni">nvidia-nemotron-3-nano-omni</option>
+        <option value="hermes-4-70b">hermes-4-70b</option>
+      </select>
+      <details>
+        <summary>⚙️ Advanced params</summary>
+        <div class="params-row">
+          <label for="reasoning-select">reasoning_effort:</label>
+          <select id="reasoning-select">
+            <option value="">— none —</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+          <label for="extra-body-input">extra_body JSON:</label>
+          <input id="extra-body-input" type="text"
+                 placeholder='{"chat_template_kwargs": {"enable_thinking": false}}'
+                 value='{"chat_template_kwargs": {"enable_thinking": false}}'/>
+        </div>
+      </details>
+    </div>
+
+    <div id="chat-box"></div>
+
+    <div id="input-row">
+      <input id="user-input" type="text" placeholder="Type a message…" autofocus/>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const IS_GUEST = {{ 'true' if is_guest else 'false' }};
+    const USERNAME = {{ username|tojson }};
+    let GUEST_ID = null;
+    let currentSessionId = null;
+    let sessionCache = {};
+    let guestReady = false;
+
+    if (IS_GUEST) {
+      GUEST_ID = localStorage.getItem("guest_id");
+      if (!GUEST_ID) {
+        GUEST_ID = crypto.randomUUID();
+        localStorage.setItem("guest_id", GUEST_ID);
+      }
+      const serverGuestId = "{{ guest_id if is_guest else '' }}";
+      if (!serverGuestId && GUEST_ID) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("guest_id", GUEST_ID);
+        window.location.replace(url.toString());
+      } else {
+        guestReady = true;
+      }
+    }
+
+    function hexToBytes(hex) {
+      if (!hex) return new Uint8Array();
+      const parts = hex.match(/.{1,2}/g) || [];
+      return new Uint8Array(parts.map(b => parseInt(b, 16)));
+    }
+
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    function dekKey() {
+      return USERNAME ? "dek_" + USERNAME : "dek";
+    }
+
+    function getDek() {
+      const key = dekKey();
+      const hex = localStorage.getItem(key)
+                || localStorage.getItem("dek")
+                || sessionStorage.getItem("dek");
+      if (hex) {
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, hex);
+        }
+        return hexToBytes(hex);
+      }
+      return null;
+    }
+
+    function storeDek(hexValue) {
+      localStorage.setItem(dekKey(), hexValue);
+      localStorage.setItem("dek", hexValue);
+      sessionStorage.setItem("dek", hexValue);
+    }
+
+    function clearDek() {
+      localStorage.removeItem(dekKey());
+      localStorage.removeItem("dek");
+      sessionStorage.removeItem("dek");
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function encryptText(plaintext) {
+      const dek = getDek();
+      if (!dek) return null;
+
+      const key = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["encrypt"]);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        key,
+        new TextEncoder().encode(plaintext)
+      );
+      return bytesToHex(iv) + ":" + bytesToHex(new Uint8Array(ct));
+    }
+
+    async function decryptText(encHex) {
+      const dek = getDek();
+      if (!dek) return "[encrypted — unlock required]";
+      const [ivHex, ctHex] = String(encHex || "").split(":");
+      if (!ivHex || !ctHex) return "[invalid encrypted message]";
+      try {
+        const key = await crypto.subtle.importKey("raw", dek, "AES-GCM", false, ["decrypt"]);
+        const plain = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: hexToBytes(ivHex) },
+          key,
+          hexToBytes(ctHex)
+        );
+        return new TextDecoder().decode(plain);
+      } catch (e) {
+        return "[decryption failed]";
+      }
+    }
+
+    async function deriveKey(password, saltHex) {
+      const enc = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        enc.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      return crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: hexToBytes(saltHex),
+          iterations: 600000,
+          hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    async function aesDecryptToBytes(keyObj, encHex) {
+      const [ivHex, ctHex] = String(encHex || "").split(":");
+      if (!ivHex || !ctHex) throw new Error("Invalid encrypted payload");
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: hexToBytes(ivHex) },
+        keyObj,
+        hexToBytes(ctHex)
+      );
+      return new Uint8Array(plain);
+    }
+
+    async function doUnlock() {
+      const username = document.getElementById("unlock-username").value.trim();
+      const password = document.getElementById("unlock-password").value;
+
+      if (!username || !password) {
+        alert("Username and password are required.");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/kdf-params", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+
+        const data = await res.json();
+        if (!data.salt || !data.encrypted_dek) {
+          alert("Could not fetch encryption parameters.");
+          return;
+        }
+
+        const key = await deriveKey(password, data.salt);
+        const dekBytes = await aesDecryptToBytes(key, data.encrypted_dek);
+
+        storeDek(bytesToHex(dekBytes));
+        document.getElementById("unlock-password").value = "";
+        document.getElementById("overlay-unlock").classList.remove("show");
+
+        await loadHistory();
+      } catch (err) {
+        alert("Unlock error: " + err.message);
+      }
+    }
+
+    const chatBox = document.getElementById("chat-box");
+    const input = document.getElementById("user-input");
+    const btn = document.getElementById("send-btn");
+    const overlayCoins = document.getElementById("overlay-coins");
+    const overlayDelete = document.getElementById("overlay-delete");
+    const coinsValueEl = document.getElementById("coins-value");
+    const sumPromptEl = document.getElementById("sum-prompt");
+    const sumCompletionEl = document.getElementById("sum-completion");
+    const sumTotalEl = document.getElementById("sum-total");
+
+    let sumPrompt = 0, sumCompletion = 0, sumTotal = 0;
+
+    function getCoins() {
+      return parseInt(coinsValueEl.textContent || "0", 10);
+    }
+
+    function setCoins(v) {
+      coinsValueEl.textContent = v;
+      const noCoins = v <= 0;
+      btn.disabled = noCoins;
+      input.disabled = noCoins;
+      if (noCoins) overlayCoins.classList.add("show");
+      else overlayCoins.classList.remove("show");
+    }
+
+    setCoins(getCoins());
+
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") sendMessage();
+    });
+
+    function appendMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg";
+
+      const label = document.createElement("span");
+      label.className = role === "user" ? "user" : "bot";
+      label.textContent = role === "user" ? "You: " : "Agent: ";
+
+      div.appendChild(label);
+      div.appendChild(document.createTextNode(text));
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function updateTokenSummary(usage) {
+      if (!usage) return;
+      const p = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0;
+      const c = typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0;
+      const t = typeof usage.total_tokens === "number" ? usage.total_tokens : 0;
+      sumPrompt += p;
+      sumCompletion += c;
+      sumTotal += t;
+      sumPromptEl.textContent = sumPrompt;
+      sumCompletionEl.textContent = sumCompletion;
+      sumTotalEl.textContent = sumTotal;
+    }
+
+    function startNewChat() {
+      currentSessionId = crypto.randomUUID();
+      chatBox.innerHTML = "";
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      input.focus();
+    }
+
+    function ensureSessionCache(sid) {
+      if (!sessionCache[sid]) {
+        sessionCache[sid] = {
+          sid,
+          created_at: new Date().toISOString(),
+          messages: [],
+        };
+      }
+      return sessionCache[sid];
+    }
+
+    function buildHistoryItem(sid, preview, createdAt) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      item.dataset.sid = sid;
+
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.justifyContent = "space-between";
+      row.style.alignItems = "flex-start";
+      row.style.gap = "8px";
+
+      const left = document.createElement("div");
+      left.style.minWidth = "0";
+      left.style.flex = "1";
+
+      const title = document.createElement("div");
+      title.className = "history-title";
+      title.textContent = preview || "Chat";
+
+      const date = document.createElement("div");
+      date.className = "history-date";
+      date.textContent = new Date(createdAt).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric"
+      });
+
+      left.appendChild(title);
+      left.appendChild(date);
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "history-delete";
+      del.textContent = "✕";
+      del.title = "Delete chat";
+      del.onclick = async (event) => {
+        event.stopPropagation();
+        await deleteSession(sid);
+      };
+
+      row.appendChild(left);
+      row.appendChild(del);
+      item.appendChild(row);
+
+      item.onclick = () => restoreSession(sid, item);
+      return item;
+    }
+
+    async function loadHistory() {
+      if (IS_GUEST) return;
+
+      if (!getDek()) {
+        const overlay = document.getElementById("overlay-unlock");
+        const usernameEl = document.getElementById("unlock-username");
+        if (usernameEl && !usernameEl.value) usernameEl.value = USERNAME || "";
+        overlay.classList.add("show");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/messages");
+        const msgs = await res.json();
+
+        const list = document.getElementById("history-list");
+        list.innerHTML = "";
+        sessionCache = {};
+
+        if (!Array.isArray(msgs) || msgs.length === 0) {
+          startNewChat();
+          return;
+        }
+
+        for (const m of msgs) {
+          const sid = m.chat_session_id || "legacy";
+          ensureSessionCache(sid);
+          sessionCache[sid].messages.push(m);
+          if (!sessionCache[sid].created_at) {
+            sessionCache[sid].created_at = m.created_at;
+          }
+        }
+
+        const sorted = Object.values(sessionCache).sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+
+        for (const session of sorted) {
+          const firstUserMsg = session.messages.find(m => m.role === "user");
+          let preview = "Chat";
+          if (firstUserMsg) {
+            try {
+              preview = await decryptText(firstUserMsg.content);
+            } catch (e) {
+              preview = "Chat";
+            }
+          }
+          const item = buildHistoryItem(session.sid, preview, session.created_at);
+          list.appendChild(item);
+        }
+
+        if (sorted.length > 0) {
+          const firstItem = list.querySelector(".history-item");
+          if (firstItem) {
+            await restoreSession(sorted[0].sid, firstItem);
+          }
+        } else {
+          startNewChat();
+        }
+      } catch (err) {
+        console.error("loadHistory error:", err);
+        startNewChat();
+      }
+    }
+
+    async function restoreSession(sid, itemEl) {
+      currentSessionId = sid;
+      chatBox.innerHTML = "";
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      if (itemEl) itemEl.classList.add("active");
+
+      const session = sessionCache[sid];
+      if (!session || !session.messages.length) return;
+
+      for (const m of session.messages) {
+        let text;
+        try {
+          text = await decryptText(m.content);
+        } catch (e) {
+          text = "[decryption error]";
+        }
+        const role = m.role === "user" ? "user" : "bot";
+        appendMessage(role, text);
+      }
+    }
+
+    async function saveEncryptedMessage(role, encContent) {
+      if (!currentSessionId) return false;
+      try {
+        const res = await fetch("/api/save-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role,
+            content: encContent,
+            chat_session_id: currentSessionId,
+          }),
+        });
+        return res.ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function refreshHistoryItem(sid, previewText) {
+      const list = document.getElementById("history-list");
+      if (!list) return;
+
+      const entry = ensureSessionCache(sid);
+      let item = list.querySelector(`[data-sid="${sid}"]`);
+      const preview = previewText.slice(0, 38) + (previewText.length > 38 ? "…" : "");
+
+      if (!item) {
+        item = buildHistoryItem(sid, preview, entry.created_at);
+        list.prepend(item);
+      } else {
+        const titleEl = item.querySelector(".history-title");
+        const dateEl = item.querySelector(".history-date");
+        if (titleEl) titleEl.textContent = preview;
+        if (dateEl) {
+          dateEl.textContent = new Date(entry.created_at).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric"
+          });
+        }
+        list.prepend(item);
+      }
+
+      document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
+      item.classList.add("active");
+      item.onclick = () => restoreSession(sid, item);
+    }
+
+    async function deleteSession(sid) {
+      if (!confirm("Delete this chat and all its messages?")) return;
+
+      try {
+        const res = await fetch("/api/delete-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_session_id: sid }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          alert("Error: " + (data.error || "Could not delete chat."));
+          return;
+        }
+
+        delete sessionCache[sid];
+
+        const item = document.querySelector(`.history-item[data-sid="${sid}"]`);
+        if (item) item.remove();
+
+        if (currentSessionId === sid) {
+          startNewChat();
+        }
+      } catch (err) {
+        alert("Error: " + err.message);
+      }
+    }
+
+    async function sendMessage() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      if (getCoins() <= 0) {
+        overlayCoins.classList.add("show");
+        return;
+      }
+
+      if (IS_GUEST && !GUEST_ID) {
+        appendMessage("bot", "Error: guest session not initialized. Please refresh the page.");
+        return;
+      }
+
+      if (!currentSessionId) currentSessionId = crypto.randomUUID();
+
+      input.value = "";
+      btn.disabled = true;
+      appendMessage("user", msg);
+
+      const selectedModel = document.getElementById("model-select").value;
+      const reasoningEffort = document.getElementById("reasoning-select").value;
+      const extraBodyRaw = document.getElementById("extra-body-input").value.trim();
+
+      let parsedExtraBody = null;
+      if (extraBodyRaw) {
+        try {
+          parsedExtraBody = JSON.parse(extraBodyRaw);
+        } catch (e) {
+          appendMessage("bot", "⚠️ extra_body is not valid JSON. Please fix it before sending.");
+          btn.disabled = false;
+          input.value = msg;
+          input.focus();
+          return;
+        }
+      }
+
+      const body = { message: msg, model: selectedModel };
+      if (IS_GUEST) body.guest_id = GUEST_ID;
+      if (parsedExtraBody !== null) body.extra_body = parsedExtraBody;
+      if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          appendMessage("bot", "Error: unexpected server response.");
+          btn.disabled = false;
+          input.focus();
+          return;
+        }
+
+        if (res.status === 403 && data.error === "no_coins") {
+          setCoins(0);
+        } else if (!res.ok) {
+          appendMessage("bot", `Error: ${data.error || res.statusText}`);
+        } else {
+          appendMessage("bot", data.reply || "No response");
+          updateTokenSummary(data.usage);
+          if (typeof data.coins === "number") setCoins(data.coins);
+
+          // ONLY update history/cache if the save actually succeeds
+          if (!IS_GUEST && getDek()) {
+            const userEnc = await encryptText(msg);
+            const agentEnc = await encryptText(data.reply || "");
+            
+            let saved = false;
+            if (userEnc) saved = await saveEncryptedMessage("user", userEnc);
+            if (agentEnc) await saveEncryptedMessage("agent", agentEnc);
+            
+            if (saved) {
+                refreshHistoryItem(currentSessionId, msg);
+            }
+          }
+        }
+      } catch (err) {
+        appendMessage("bot", "Error: " + err.message);
+      }
+
+      btn.disabled = getCoins() <= 0;
+      input.disabled = getCoins() <= 0;
+      input.focus();
+    }
+
+    async function buyCoins() {
+      const buyAmountEl = document.getElementById("buy-amount");
+      const amount = parseInt((buyAmountEl.value || "").trim(), 10);
+
+      if (!amount || amount <= 0) {
+        appendMessage("bot", "Enter a positive amount.");
+        return;
+      }
+
+      document.getElementById("buy-btn").disabled = true;
+      try {
+        const res = await fetch("/buy-coins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          appendMessage("bot", `Error: ${data.error}`);
+        } else {
+          setCoins(data.coins);
+          appendMessage("bot", `Added ${amount} coins. Balance: ${data.coins}.`);
+          buyAmountEl.value = "";
+        }
+      } catch (err) {
+        appendMessage("bot", "Error: " + err.message);
+      }
+      document.getElementById("buy-btn").disabled = false;
+    }
+
+    async function payPack(packId) {
+      try {
+        const res = await fetch("/payment/init", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pack: packId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          appendMessage("bot", `Payment error: ${data.error}`);
+          return;
+        }
+        window.location.href = data.authorization_url;
+      } catch (err) {
+        appendMessage("bot", "Payment error: " + err.message);
+      }
+    }
+
+    async function confirmDelete() {
+      try {
+        const res = await fetch("/delete-account", { method: "POST" });
+        if (res.ok) {
+          clearDek();
+          window.location.href = "/register";
+        } else {
+          const data = await res.json();
+          alert("Error: " + (data.error || "Could not delete account."));
+          overlayDelete.classList.remove("show");
+        }
+      } catch (err) {
+        alert("Error: " + err.message);
+        overlayDelete.classList.remove("show");
+      }
+    }
+
+    if (!IS_GUEST) {
+      loadHistory();
+    } else {
+      startNewChat();
+    }
+  </script>
+</body>
+</html>

@@ -20,6 +20,10 @@
       padding: 5px 8px; border-radius: 6px; border: 1px solid #45475a;
       background: #313244; color: #cdd6f4; font-size: 0.85rem; cursor: pointer;
     }
+    #clear-btn {
+      background: #313244; border: 1px solid #45475a; color: #f38ba8;
+      padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
+    }
     #adv-toggle {
       background: #313244; border: 1px solid #45475a; color: #89b4fa;
       padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
@@ -37,6 +41,10 @@
     #reasoning-select {
       padding: 4px 8px; border-radius: 5px; border: 1px solid #45475a;
       background: #313244; color: #cdd6f4; font-size: 0.82rem;
+    }
+    #history-limit {
+      width: 60px; padding: 4px 6px; border-radius: 5px; border: 1px solid #45475a;
+      background: #313244; color: #cdd6f4; font-size: 0.82rem; text-align: center;
     }
     #extra-body-input {
       flex: 1; min-width: 260px; padding: 4px 8px; border-radius: 5px;
@@ -110,12 +118,13 @@
       <option value="nvidia-nemotron-3-nano-omni">nvidia-nemotron-3-nano-omni</option>
       <option value="hermes-4-70b">hermes-4-70b</option>
     </select>
+    <button id="clear-btn" onclick="clearChat()">🗑️ Clear</button>
     <button id="adv-toggle" onclick="toggleAdv()">⚙️ Advanced</button>
   </div>
 
   <!-- Advanced params -->
   <div id="adv-panel">
-    <!-- Row 1: reasoning + extra_body -->
+    <!-- Row 1: reasoning + history limit + extra_body -->
     <div class="adv-row">
       <label for="reasoning-select">reasoning_effort:</label>
       <select id="reasoning-select">
@@ -124,6 +133,8 @@
         <option value="medium">medium</option>
         <option value="high">high</option>
       </select>
+      <label for="history-limit">history turns:</label>
+      <input id="history-limit" type="number" min="0" max="100" value="20"/>
       <label for="extra-body-input">extra_body JSON:</label>
       <input id="extra-body-input" type="text"
              value='{"chat_template_kwargs": {"enable_thinking": false}}'
@@ -211,6 +222,7 @@ Character/supportive only. No tools. No policy unless refusing.</textarea>
     Tokens — prompt: <span id="t-prompt">0</span> &nbsp;|
     completion: <span id="t-comp">0</span> &nbsp;|
     total: <span id="t-total">0</span>
+    &nbsp;&nbsp;|&nbsp;&nbsp; history: <span id="t-hist">0</span> turns
   </div>
 
   <!-- Chat -->
@@ -228,10 +240,19 @@ Character/supportive only. No tools. No policy unless refusing.</textarea>
     const sendBtn  = document.getElementById('send-btn');
     let tPrompt = 0, tComp = 0, tTotal = 0;
 
+    // In-memory conversation history: [{role, content}, ...]
+    let history = [];
+
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) send(); });
 
     function toggleAdv() {
       document.getElementById('adv-panel').classList.toggle('open');
+    }
+
+    function clearChat() {
+      history = [];
+      chatBox.innerHTML = '';
+      document.getElementById('t-hist').textContent = '0';
     }
 
     function bubble(role, text) {
@@ -266,6 +287,7 @@ Character/supportive only. No tools. No policy unless refusing.</textarea>
       const reasoningEffort = document.getElementById('reasoning-select').value;
       const extraBodyRaw    = document.getElementById('extra-body-input').value.trim();
       const systemPrompt    = document.getElementById('system-prompt-input').value.trim();
+      const maxTurns        = parseInt(document.getElementById('history-limit').value, 10) || 20;
 
       let extraBody = null;
       if (extraBodyRaw) {
@@ -283,7 +305,10 @@ Character/supportive only. No tools. No policy unless refusing.</textarea>
       chatBox.appendChild(thinking);
       chatBox.scrollTop = chatBox.scrollHeight;
 
-      const body = { message: msg, model };
+      // Slice history to last maxTurns *pairs* = maxTurns*2 messages
+      const historySlice = history.slice(-(maxTurns * 2));
+
+      const body = { message: msg, model, history: historySlice };
       if (extraBody)       body.extra_body       = extraBody;
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
       if (systemPrompt)    body.system_prompt    = systemPrompt;
@@ -300,8 +325,14 @@ Character/supportive only. No tools. No policy unless refusing.</textarea>
         if (!res.ok || data.error) {
           bubble('error', 'Error: ' + (data.error || res.statusText));
         } else {
-          bubble('bot', data.reply || '(empty response)');
+          const reply = data.reply || '(empty response)';
+          bubble('bot', reply);
           updateTokens(data.usage);
+
+          // Append this exchange to history
+          history.push({ role: 'user',      content: msg   });
+          history.push({ role: 'assistant', content: reply });
+          document.getElementById('t-hist').textContent = Math.floor(history.length / 2);
         }
       } catch (err) {
         thinking.remove();

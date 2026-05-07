@@ -62,6 +62,16 @@
       letter-spacing: 0.05em; margin-bottom: 2px;
     }
 
+    /* ── Sandwich toggle ── */
+    .sandwich-row {
+      display: flex; align-items: center; gap: 8px;
+      background: #1e1e2e; border: 1px solid #45475a;
+      border-radius: 6px; padding: 5px 10px; width: fit-content;
+    }
+    .sandwich-row input[type=checkbox] { accent-color: #a6e3a1; width: 14px; height: 14px; cursor: pointer; }
+    .sandwich-row label { color: #a6e3a1; cursor: pointer; font-size: 0.82rem; white-space: nowrap; }
+    .sandwich-row .sandwich-hint { color: #6c7086; font-size: 0.75rem; }
+
     /* ── Token bar ── */
     #token-bar {
       background: #181825; color: #6c7086;
@@ -139,6 +149,14 @@
              value='{"chat_template_kwargs": {"enable_thinking": false}}'
              placeholder='{"chat_template_kwargs": {"enable_thinking": false}}'/>
     </div>
+
+    <!-- Sandwich injection toggle -->
+    <div class="sandwich-row">
+      <input type="checkbox" id="sandwich-toggle"/>
+      <label for="sandwich-toggle">🥪 Sandwich safety injection</label>
+      <span class="sandwich-hint">(injects a safety reminder before every message — off by default)</span>
+    </div>
+
     <div>
       <div class="adv-section-label">System Prompt</div>
       <textarea id="system-prompt-input">You are a safe, immersive NSFW-AI roleplay assistant for adult users. Generate character-consistent roleplay in the user's language. **NO TOOL USE. No function calls. Pure chat only.**
@@ -317,11 +335,12 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
 
       bubble('user', msg);
 
-      const model           = document.getElementById('model-select').value;
-      const reasoningEffort = document.getElementById('reasoning-select').value;
-      const extraBodyRaw    = document.getElementById('extra-body-input').value.trim();
-      const systemPrompt    = document.getElementById('system-prompt-input').value.trim();
-      const maxTurns        = parseInt(document.getElementById('history-limit').value, 10) || 20;
+      const model            = document.getElementById('model-select').value;
+      const reasoningEffort  = document.getElementById('reasoning-select').value;
+      const extraBodyRaw     = document.getElementById('extra-body-input').value.trim();
+      const systemPrompt     = document.getElementById('system-prompt-input').value.trim();
+      const maxTurns         = parseInt(document.getElementById('history-limit').value, 10) || 20;
+      const sandwichEnabled  = document.getElementById('sandwich-toggle').checked;
 
       let extraBody = null;
       if (extraBodyRaw) {
@@ -340,7 +359,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       chatBox.scrollTop = chatBox.scrollHeight;
 
       const historySlice = history.slice(-(maxTurns * 2));
-      const body = { message: msg, model, history: historySlice };
+      const body = { message: msg, model, history: historySlice, sandwich: sandwichEnabled };
       if (extraBody)       body.extra_body       = extraBody;
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
       if (systemPrompt)    body.system_prompt    = systemPrompt;

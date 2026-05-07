@@ -9,7 +9,7 @@ CORTECS_API_KEY  = os.environ.get("CORTECS_API_KEY", "")
 CORTECS_BASE_URL = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
 DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant.")
 
-# Injected silently before every user message (sandwich method).
+# Injected silently before every user message when sandwich mode is ON.
 # Keeps hard blocks fresh at the bottom of the context window regardless of history length.
 SAFETY_REMINDER = """[SAFETY & SCOPE REMINDER — re-read before generating your response]
 
@@ -78,19 +78,23 @@ def chat():
     reasoning_effort = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
     system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
     history          = data.get("history", [])
+    sandwich_on      = bool(data.get("sandwich", False))  # OFF by default
 
     if reasoning_effort:
         extra_body_raw = dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {}
         extra_body_raw["reasoning_effort"] = reasoning_effort
 
-    # Sandwich: system prompt → history → safety reminder → ack → current user message
-    messages = (
-        [{"role": "system",    "content": system_prompt}]
-        + list(history)
-        + [{"role": "user",      "content": SAFETY_REMINDER},
-           {"role": "assistant", "content": SAFETY_ACK},
-           {"role": "user",      "content": user_message}]
-    )
+    # Build message array
+    messages = [{"role": "system", "content": system_prompt}] + list(history)
+
+    if sandwich_on:
+        # Sandwich: inject safety reminder + ack right before the user message
+        messages += [
+            {"role": "user",      "content": SAFETY_REMINDER},
+            {"role": "assistant", "content": SAFETY_ACK},
+        ]
+
+    messages.append({"role": "user", "content": user_message})
 
     try:
         client = OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)

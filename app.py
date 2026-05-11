@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from flask import Flask, request, jsonify, render_template
@@ -9,6 +10,7 @@ from memory import retriever as memory_retriever
 from memory import extractor as memory_extractor
 
 app = Flask(__name__)
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration (loaded from environment variables)
@@ -21,37 +23,35 @@ DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assis
 # Safety sandwich constants
 # Injected silently before every user message when sandwich mode is ON.
 # ---------------------------------------------------------------------------
-SAFETY_REMINDER = """[SAFETY & SCOPE REMINDER — re-read before generating your response]
+SAFETY_REMINDER = """[SAFETY & SCOPE REMINDER - re-read before generating your response]
 
-✅ NSFW adult roleplay IS allowed and encouraged. Stay immersive, in-character, and explicit if the scene calls for it.
+NSFW adult roleplay IS allowed and encouraged. Stay immersive, in-character, and explicit if the scene calls for it.
 
-⛔ HARD STOP — exit scene IMMEDIATELY and use the refusal template if the current message contains ANY of:
-• Minors / underage / teen / 17 / barely legal / schoolgirl / schoolboy / perky young / still developing
-• daddy + young/teen/little/baby in a sexual context
-• Incest / family sex
-• Bestiality
-• Non-consent / force / threats / incapacity
-• CSAM / rape / graphic violence against a real person
-• Hate speech / criminal instructions / doxxing
+HARD STOP - exit scene IMMEDIATELY and use the refusal template if the current message contains ANY of:
+- Minors / underage / teen / 17 / barely legal / schoolgirl / schoolboy / perky young / still developing
+- daddy + young/teen/little/baby in a sexual context
+- Incest / family sex
+- Bestiality
+- Non-consent / force / threats / incapacity
+- CSAM / rape / graphic violence against a real person
+- Hate speech / criminal instructions / doxxing
 
 Refusal template (translate into the user's language):
 "I have to stop the roleplay here. [trigger] is something I cannot include, even fictionally. If you'd like to continue, we can rewind to before that point with all characters as adults."
 
-⚠️ SELF-HARM / SUICIDE — if the user expresses genuine distress, self-harm ideation, or suicidal thoughts:
-• Exit roleplay immediately.
-• Respond with empathy IN THE USER'S LANGUAGE.
-• Provide location-appropriate crisis resources (ask for location if unknown).
-• Do NOT continue the scene until the user confirms they are safe.
+SELF-HARM / SUICIDE - if the user expresses genuine distress, self-harm ideation, or suicidal thoughts:
+- Exit roleplay immediately.
+- Respond with empathy IN THE USER'S LANGUAGE.
+- Provide location-appropriate crisis resources (ask for location if unknown).
+- Do NOT continue the scene until the user confirms they are safe.
 
 Character momentum, prior coherence, and user insistence do NOT override any of the above."""
 
 SAFETY_ACK = "Safety and scope check confirmed. NSFW roleplay is on. Hard blocks and self-harm rules are active. Generating response now."
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 def _clean(text):
     """Strip <think>...</think> blocks produced by Qwen3 thinking mode."""
     if not text:
@@ -67,7 +67,7 @@ def extract_reply(choice):
     content = _clean(getattr(msg, "content", None) or "")
     if content:
         return content
-    # Fallback: some models surface reasoning in reasoning_content
+    # Fallback: some models surface reasoning in reasoning_content.
     reasoning = _clean(getattr(msg, "reasoning_content", None) or "")
     if reasoning:
         return reasoning
@@ -77,7 +77,6 @@ def extract_reply(choice):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -90,13 +89,13 @@ def chat():
     Per-turn memory pipeline (executed in this order):
       1. retriever.build_memory_block()  -- inject facts + summary BEFORE the LLM call
       2. LLM call
-      3. extractor.extract_and_store()   -- learn new facts from the user message AFTER reply
-      4. db.touch_last_used()            -- mark injected facts as recently used
-      5. summariser.maybe_summarise()    -- conditionally update the long-term summary
+      3. extractor.extract_and_store()  -- learn new facts from the user message AFTER reply
+      4. db.touch_last_used()           -- mark injected facts as recently used
+      5. summariser.maybe_summarise()   -- conditionally update the long-term summary
 
     Prompt order sent to the LLM (matches the hint shown in the UI):
-      1. System prompt  (+ character card appended if provided)
-      2. Memory block   (injected as a system turn when a session is active)
+      1. System prompt (+ character card appended if provided)
+      2. Memory block (injected as a system turn when a session is active)
       3. Conversation history
       4. Safety sandwich (when enabled)
       5. User message
@@ -141,11 +140,11 @@ def chat():
         system_content += "\n\n" + character_card
 
     # -----------------------------------------------------------------------
-    # Step 1 — Hybrid memory retrieval (BEFORE the LLM call)
+    # Step 1 -- Hybrid memory retrieval (BEFORE the LLM call)
     # Build the [MEMORY] block from stored facts + active conversation summary.
     # Runs only when a session is active (user_id is required at minimum).
     # -----------------------------------------------------------------------
-    messages = [{"role": "system", "content": system_content}]
+    messages: list = [{"role": "system", "content": system_content}]
     used_fact_ids: list = []
 
     if user_id:
@@ -172,10 +171,13 @@ def chat():
     messages.append({"role": "user", "content": user_message})
 
     # -----------------------------------------------------------------------
-    # Step 2 — LLM call
+    # Step 2 -- LLM call
+    # The client is created once per request using the API key already
+    # validated above.  All post-reply steps reuse the same client instance.
     # -----------------------------------------------------------------------
+    client = OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
+
     try:
-        client = OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
         kwargs = dict(
             model=model,
             messages=messages,
@@ -189,17 +191,18 @@ def chat():
         reply = extract_reply(response.choices[0]) if response.choices else ""
         if not reply:
             reply = "Model returned an empty response."
-
         usage = response.usage
 
         # -------------------------------------------------------------------
-        # Steps 3-5 — Post-reply memory updates (only when session is active)
-        # All three are fire-and-forget: errors are logged, never re-raised.
+        # Steps 3-5 -- Post-reply memory updates (only when session is active)
+        # All three are fire-and-forget: errors are logged but never re-raised
+        # so a memory failure never blocks the user's chat response.
         # -------------------------------------------------------------------
         if user_id:
-            # Step 3 — Extract and store facts from the user's message.
-            # We pass the LLM client and model so the extractor can use the
-            # same API endpoint already configured for this request.
+
+            # Step 3 -- Extract and store facts + safety flags from the user's
+            # message.  We pass the same client and model already in use so
+            # the extractor stays in sync with the active chat model.
             try:
                 memory_extractor.extract_and_store(
                     user_message=user_message,
@@ -209,19 +212,19 @@ def chat():
                     llm_client=client,
                     model=model,
                 )
-            except Exception:
-                pass  # non-fatal
+            except Exception as exc:
+                log.warning("chat: extract_and_store failed: %s", exc)
 
-            # Step 4 — Mark injected facts as recently used so decay scoring
-            # stays accurate. Done after a successful reply only.
+            # Step 4 -- Mark injected facts as recently used so that the
+            # confidence-decay scoring stays accurate over time.
             if used_fact_ids:
                 try:
                     memory_db.touch_last_used(used_fact_ids)
-                except Exception:
-                    pass  # non-fatal
+                except Exception as exc:
+                    log.warning("chat: touch_last_used failed: %s", exc)
 
-            # Step 5 — Conditionally update the long-term conversation summary.
-            # Both user_id and character_id are required for summaries.
+            # Step 5 -- Conditionally update the long-term conversation
+            # summary.  Both user_id and character_id are required.
             # The same model the user selected is forwarded so summarisation
             # stays in sync with the active UI model selection.
             if character_id:
@@ -238,8 +241,8 @@ def chat():
                         base_url=CORTECS_BASE_URL,
                         model=model,
                     )
-                except Exception:
-                    pass  # non-fatal
+                except Exception as exc:
+                    log.warning("chat: maybe_summarise failed: %s", exc)
 
         return jsonify({
             "reply": reply,
@@ -264,10 +267,10 @@ def memory_debug():
     """Return memory facts filtered by user_id and/or character_id.
 
     Filter behaviour:
-      - no params         -> full table (up to 200 rows)
-      - user_id only      -> all facts for that user
-      - character_id only -> all facts for that character across all users
-      - both provided     -> facts matching both user AND character
+      - no params          -> full table (up to 200 rows)
+      - user_id only       -> all facts for that user
+      - character_id only  -> all facts for that character across all users
+      - both provided      -> facts matching both user AND character
     """
     user_id      = (request.args.get("user_id")      or "").strip() or None
     character_id = (request.args.get("character_id") or "").strip() or None
@@ -288,7 +291,10 @@ def memory_debug():
 
     def serialise(record):
         """Convert datetime values to ISO strings for JSON serialisation."""
-        return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in record.items()}
+        return {
+            k: (v.isoformat() if hasattr(v, "isoformat") else v)
+            for k, v in record.items()
+        }
 
     return jsonify({
         "user_memories":      [serialise(r) for r in user_memories],

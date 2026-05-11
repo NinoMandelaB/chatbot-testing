@@ -61,9 +61,9 @@ def cursor():
 def insert_fact(
     user_id: str,
     fact_text: str,
-    fact_owner: str,          # 'user' | 'character' | 'system'
-    scope: str,               # 'user_private' | 'cross_character' | 'safety_global'
-    temporal_tag: str,        # 'current' | 'historical' | 'resolved'
+    fact_owner: str,        # 'user' | 'character' | 'system'
+    scope: str,             # 'user_private' | 'cross_character' | 'safety_global'
+    temporal_tag: str,      # 'current' | 'historical' | 'resolved'
     character_id: Optional[str] = None,
     confidence_score: float = 1.0,
     importance_score: float = 1.0,
@@ -71,12 +71,11 @@ def insert_fact(
     trigger_tags: Optional[list] = None,
     conversation_id: Optional[str] = None,
     source_message_id: Optional[str] = None,
-    embedding: Optional[list] = None,   # 384-dim float list
+    embedding: Optional[list] = None,  # 384-dim float list
 ) -> int:
     """Insert a new memory fact and return its memory_fact_id."""
     tags = trigger_tags or []
     now = datetime.now(timezone.utc)
-
     with cursor() as cur:
         cur.execute("""
             INSERT INTO memory_facts (
@@ -89,8 +88,7 @@ def insert_fact(
                 %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s
-            )
-            RETURNING memory_fact_id
+            ) RETURNING memory_fact_id
         """, (
             user_id, character_id, fact_text, fact_owner, scope,
             temporal_tag, now, confidence_score, importance_score,
@@ -98,28 +96,26 @@ def insert_fact(
             embedding, now,
         ))
         row = cur.fetchone()
-    return row["memory_fact_id"]
+        return row["memory_fact_id"]
 
 
 def resolve_facts_by_keyword(user_id: str, keyword: str) -> int:
     """
     Mark all non-safety facts containing *keyword* as resolved.
     Returns the number of rows updated.
-
-    Safety-global facts are intentionally excluded: only a human
-    moderator should clear those.
+    Safety-global facts are intentionally excluded.
     """
     with cursor() as cur:
         cur.execute("""
             UPDATE memory_facts
-            SET temporal_tag   = 'resolved',
-                resolved_at    = NOW(),
+            SET temporal_tag = 'resolved',
+                resolved_at  = NOW(),
                 confidence_score = 0.05
-            WHERE user_id      = %s
-              AND fact_text    ILIKE %s
-              AND scope        != 'safety_global'
+            WHERE user_id = %s
+              AND fact_text ILIKE %s
+              AND scope != 'safety_global'
               AND temporal_tag != 'resolved'
-              AND is_active    = TRUE
+              AND is_active = TRUE
         """, (user_id, f"%{keyword}%"))
         return cur.rowcount
 
@@ -149,8 +145,8 @@ def fetch_safety_flags(user_id: str) -> list[dict]:
         cur.execute("""
             SELECT memory_fact_id, trigger_tags, fact_text, created_at
             FROM memory_facts
-            WHERE user_id  = %s
-              AND scope    = 'safety_global'
+            WHERE user_id = %s
+              AND scope = 'safety_global'
               AND is_active = TRUE
             ORDER BY importance_score DESC
             LIMIT 10
@@ -170,16 +166,16 @@ def fetch_candidate_facts(
     filters = "AND temporal_tag != 'resolved'" if exclude_resolved else ""
     with cursor() as cur:
         cur.execute(f"""
-            SELECT memory_fact_id, fact_text, fact_owner, scope,
-                   temporal_tag, as_of, confidence_score, importance_score,
-                   decay_rate, trigger_tags, embedding
+            SELECT memory_fact_id, fact_text, fact_owner, scope, temporal_tag,
+                   as_of, confidence_score, importance_score, decay_rate,
+                   trigger_tags, embedding
             FROM memory_facts
-            WHERE user_id   = %s
-              AND scope     != 'safety_global'
-              AND is_active  = TRUE
+            WHERE user_id = %s
+              AND scope != 'safety_global'
+              AND is_active = TRUE
               AND (
-                  (scope = 'user_private'    AND character_id = %s)
-                  OR scope = 'cross_character'
+                    (scope = 'user_private' AND character_id = %s)
+                    OR scope = 'cross_character'
               )
               {filters}
             ORDER BY importance_score DESC, confidence_score DESC
@@ -189,7 +185,7 @@ def fetch_candidate_facts(
 
 
 def fetch_all_facts_for_debug(user_id: str) -> list[dict]:
-    """Return all facts for a user, used by the /memory/debug API endpoint."""
+    """Return all facts for a user (legacy helper, used internally)."""
     with cursor() as cur:
         cur.execute("""
             SELECT memory_fact_id, character_id, fact_text, fact_owner,
@@ -200,4 +196,46 @@ def fetch_all_facts_for_debug(user_id: str) -> list[dict]:
             ORDER BY created_at DESC
             LIMIT 200
         """, (user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_facts_for_debug(
+    user_id: Optional[str] = None,
+    character_id: Optional[str] = None,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Flexible debug query used by the /memory/debug API endpoint.
+
+    Filter behaviour:
+      - both None      -> full table (up to `limit` rows)
+      - user_id only   -> all facts for that user
+      - character_id only -> all facts for that character across all users
+      - both provided  -> facts matching both user AND character
+    """
+    conditions = ["is_active = TRUE"]
+    params: list = []
+
+    if user_id:
+        conditions.append("user_id = %s")
+        params.append(user_id)
+
+    if character_id:
+        conditions.append("character_id = %s")
+        params.append(character_id)
+
+    where_clause = " AND ".join(conditions)
+    params.append(limit)
+
+    with cursor() as cur:
+        cur.execute(f"""
+            SELECT memory_fact_id, user_id, character_id, fact_text,
+                   fact_owner, scope, temporal_tag, as_of,
+                   confidence_score, importance_score,
+                   trigger_tags, is_active, created_at
+            FROM memory_facts
+            WHERE {where_clause}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, params)
         return [dict(r) for r in cur.fetchall()]

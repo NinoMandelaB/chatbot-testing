@@ -1,3 +1,17 @@
+# Core web framework and WSGI server
 flask>=3.0.0
-openai>=1.0.0
 gunicorn
+
+# OpenAI-compatible client (used for Cortecs API calls)
+openai>=1.0.0
+
+# PostgreSQL driver for the memory layer
+psycopg2-binary>=2.9
+
+# Sentence-transformer model for semantic embeddings (runs on CPU, no GPU needed)
+# Downloads all-MiniLM-L6-v2 (~22 MB) on first use.
+sentence-transformers>=3.0.0
+
+# pgvector Python helper — formats vector literals for psycopg2
+# (the actual pgvector Postgres extension must be enabled in the DB separately)
+pgvector>=0.3.0

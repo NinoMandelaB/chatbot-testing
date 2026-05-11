@@ -309,6 +309,108 @@ def memory_debug():
     })
 
 
+# ---------------------------------------------------------------------------
+# Preview-prompt route
+# ---------------------------------------------------------------------------
+@app.route("/preview-prompt", methods=["POST"])
+def preview_prompt():
+    """Return the exact list of messages that /chat would send to the LLM.
+
+    Accepts the same JSON body as /chat (message, model, system_prompt,
+    character_card, history, sandwich, memory_on, user_id, character_id,
+    history_limit).
+
+    Runs the real memory retriever so the [MEMORY] block shown in the
+    preview contains the actual facts from the DB, not a placeholder.
+    Does NOT call the LLM and does NOT modify any state.
+
+    Returns:
+        messages  -- list of {role, content} dicts in LLM order
+        segments  -- same list but with a human-readable label per entry
+                     (used by the frontend to render section headers)
+    """
+    data = request.get_json(silent=True) or {}
+
+    # --- Prompt content (mirrors /chat exactly) ---
+    system_prompt  = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    character_card = (data.get("character_card") or "").strip()
+    history        = data.get("history", [])
+    sandwich_on    = bool(data.get("sandwich", False))
+    user_message   = (data.get("message") or "").strip()
+    user_id        = (data.get("user_id") or "").strip() or None
+    character_id   = (data.get("character_id") or "").strip() or None
+
+    # -------------------------------------------------------------------
+    # Build messages list -- identical logic to /chat
+    # -------------------------------------------------------------------
+
+    # 1. System prompt + character card (merged into one system turn)
+    system_content = system_prompt
+    if character_card:
+        system_content += "\n\n" + character_card
+
+    messages = [{"role": "system", "content": system_content}]
+    # Label for the frontend: split at the character-card boundary so
+    # the user can see both sections clearly.
+    seg_label_system = "SYSTEM PROMPT"
+    if character_card:
+        seg_label_system = "SYSTEM PROMPT + CHARACTER CARD"
+
+    segments = [{"label": seg_label_system, "role": "system", "content": system_content}]
+
+    # 2. Memory block (real retrieval from DB, same as /chat)
+    if user_id:
+        try:
+            memory_block, _ = memory_retriever.build_memory_block(
+                user_message=user_message,
+                user_id=user_id,
+                character_id=character_id,
+            )
+        except Exception as exc:
+            log.warning("preview_prompt: memory retrieval failed: %s", exc)
+            memory_block = None
+
+        if memory_block:
+            messages.append({"role": "system", "content": memory_block})
+            segments.append({"label": "MEMORY BLOCK", "role": "system", "content": memory_block})
+        else:
+            segments.append({
+                "label": "MEMORY BLOCK",
+                "role": "system",
+                "content": "(no memory facts for this session)",
+            })
+    else:
+        segments.append({
+            "label": "MEMORY BLOCK",
+            "role": "system",
+            "content": "(no session active — set user_id to enable memory)",
+        })
+
+    # 3. Conversation history
+    for turn in history:
+        messages.append(turn)
+        segments.append({"label": "HISTORY", "role": turn.get("role", ""), "content": turn.get("content", "")})
+
+    # 4. Safety sandwich (optional)
+    if sandwich_on:
+        messages.append({"role": "user",      "content": SAFETY_REMINDER})
+        messages.append({"role": "assistant", "content": SAFETY_ACK})
+        segments.append({"label": "SAFETY SANDWICH (user)",     "role": "user",      "content": SAFETY_REMINDER})
+        segments.append({"label": "SAFETY SANDWICH (assistant)","role": "assistant", "content": SAFETY_ACK})
+
+    # 5. Current user message
+    if user_message:
+        messages.append({"role": "user", "content": user_message})
+        segments.append({"label": "USER MESSAGE", "role": "user", "content": user_message})
+    else:
+        segments.append({
+            "label": "USER MESSAGE",
+            "role": "user",
+            "content": "(input field is empty)",
+        })
+
+    return jsonify({"messages": messages, "segments": segments})
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

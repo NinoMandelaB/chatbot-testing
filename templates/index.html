@@ -240,7 +240,7 @@
         <option value="medium">medium</option>
         <option value="high">high</option>
       </select>
-      <label for="history-limit">history turns:</label>
+      <label for="history-limit">history messages:</label>
       <input id="history-limit" type="number" min="0" max="100" value="20"/>
       <label for="extra-body-input">extra_body JSON:</label>
       <input id="extra-body-input" type="text"
@@ -547,7 +547,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       chatBox.appendChild(thinking);
       chatBox.scrollTop = chatBox.scrollHeight;
 
-      const historySlice = history.slice(-(maxTurns * 2));
+      const historySlice = history.slice(-maxTurns);
       const body = {
         message:        msg,
         model,
@@ -579,7 +579,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
           updateTokens(data.usage);
           history.push({ role: 'user',      content: msg   });
           history.push({ role: 'assistant', content: reply });
-          document.getElementById('t-hist').textContent = Math.floor(history.length / 2);
+          document.getElementById('t-hist').textContent = history.length;
         }
       } catch (err) {
         thinking.remove();
@@ -605,7 +605,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       message:       userMsg,
       system_prompt: systemPrompt,
       character_card: characterCard,
-      history:       history.slice(-(maxTurns * 2)),
+      history:       history.slice(-maxTurns),
       sandwich:      sandwich,
     };
     if (sessionUserId) body.user_id       = sessionUserId;

@@ -51,15 +51,20 @@
       border: 1px solid #45475a; background: #313244; color: #cdd6f4;
       font-family: monospace; font-size: 0.8rem;
     }
-    #system-prompt-input {
+    #system-prompt-input, #character-card-input {
       width: 100%; padding: 8px 10px; border-radius: 5px;
       border: 1px solid #45475a; background: #313244; color: #cdd6f4;
       font-family: monospace; font-size: 0.8rem;
-      resize: vertical; min-height: 160px; line-height: 1.5;
+      resize: vertical; line-height: 1.5;
     }
+    #system-prompt-input { min-height: 160px; }
+    #character-card-input { min-height: 100px; }
     .adv-section-label {
       color: #7f849c; font-size: 0.75rem; text-transform: uppercase;
       letter-spacing: 0.05em; margin-bottom: 2px;
+    }
+    .prompt-order-hint {
+      color: #6c7086; font-size: 0.72rem; font-style: italic; margin-top: 2px;
     }
 
     /* ── Sandwich toggle ── */
@@ -95,6 +100,7 @@
     }
     .memory-item.user { border-left-color: #a6e3a1; }
     .memory-item.character { border-left-color: #f9e2af; }
+    .memory-item.safety { border-left-color: #f38ba8; }
 
     /* ── Token bar ── */
     #token-bar { background: #181825; color: #6c7086; padding: 4px 16px; font-size: 0.75rem; }
@@ -161,8 +167,8 @@
     <!-- Sandwich injection toggle -->
     <div class="sandwich-row">
       <input type="checkbox" id="sandwich-toggle"/>
-      <label for="sandwich-toggle">🥪 Sandwich safety injection</label>
-      <span class="sandwich-hint">(injects a safety reminder before every message — off by default)</span>
+      <label for="sandwich-toggle">🥪 Safety sandwich injection</label>
+      <span class="sandwich-hint">(injects a safety reminder before every user message — off by default)</span>
     </div>
 
     <!-- Memory debug panel -->
@@ -176,15 +182,19 @@
         <button onclick="loadMemoryDebug()">🔍 Load Memory</button>
       </div>
       <div id="memory-output" style="display:none;">
-        <div class="adv-section-label" style="margin-top:10px;">User Memories:</div>
+        <div class="adv-section-label" style="margin-top:10px;">User Memories (user_private):</div>
         <div class="memory-list" id="user-memories"></div>
-        <div class="adv-section-label" style="margin-top:10px;">Character Memories:</div>
+        <div class="adv-section-label" style="margin-top:10px;">Character Memories (character_private):</div>
         <div class="memory-list" id="character-memories"></div>
+        <div class="adv-section-label" style="margin-top:10px;">🚨 Safety Flags (safety_global):</div>
+        <div class="memory-list" id="safety-memories"></div>
       </div>
     </div>
 
+    <!-- System prompt -->
     <div>
       <div class="adv-section-label">System Prompt</div>
+      <p class="prompt-order-hint">Prompt order sent to LLM: System Prompt → Character Card → Memory Facts → Safety Sandwich (if on) → User Message</p>
       <textarea id="system-prompt-input">You are a safe, immersive NSFW-AI roleplay assistant for adult users. Generate character-consistent roleplay in the user's language. **NO TOOL USE. No function calls. Pure chat only.**
 # Instruction Priority
 1. Safety rules (overrides everything)
@@ -279,6 +289,12 @@ Please reach out — someone is there for you."
 # Output
 Character/supportive only. No tools. No policy text unless refusing or in crisis support.</textarea>
     </div>
+
+    <!-- Character card -->
+    <div>
+      <div class="adv-section-label">Character Card <span style="color:#6c7086;font-weight:normal;">(optional — sent after system prompt, before memory)</span></div>
+      <textarea id="character-card-input" placeholder="Name: Amara\nAge: 28\nPersonality: Warm, playful, direct...\nBackground: ...\nSpeech style: ..."></textarea>
+    </div>
   </div>
 
   <!-- Token bar -->
@@ -333,55 +349,38 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       document.getElementById('t-total').textContent = tTotal;
     }
 
-    // Memory debug function
     async function loadMemoryDebug() {
       const userId = document.getElementById('user-id-input').value.trim();
       const charId = document.getElementById('character-id-input').value.trim();
-      if (!userId || !charId) {
-        alert('Please enter both User ID and Character ID');
-        return;
-      }
+      if (!userId || !charId) { alert('Please enter both User ID and Character ID'); return; }
 
       try {
         const res = await fetch(`/memory/debug?user_id=${encodeURIComponent(userId)}&character_id=${encodeURIComponent(charId)}`);
         const data = await res.json();
+        if (!res.ok || data.error) { alert('Error: ' + (data.error || res.statusText)); return; }
 
-        if (!res.ok || data.error) {
-          alert('Error loading memory: ' + (data.error || res.statusText));
-          return;
-        }
+        const renderList = (divId, items, emptyMsg) => {
+          const el = document.getElementById(divId);
+          el.innerHTML = '';
+          if (items && items.length) {
+            items.forEach(m => {
+              const d = document.createElement('div');
+              d.className = 'memory-item ' + (m.scope || m.fact_owner || '');
+              d.textContent = m.fact || m.fact_text || JSON.stringify(m);
+              el.appendChild(d);
+            });
+          } else {
+            el.innerHTML = `<div style="color:#7f849c;font-style:italic;">${emptyMsg}</div>`;
+          }
+        };
 
-        // Display user memories
-        const userMemDiv = document.getElementById('user-memories');
-        userMemDiv.innerHTML = '';
-        if (data.user_memories && data.user_memories.length > 0) {
-          data.user_memories.forEach(mem => {
-            const div = document.createElement('div');
-            div.className = 'memory-item user';
-            div.textContent = mem.fact;
-            userMemDiv.appendChild(div);
-          });
-        } else {
-          userMemDiv.innerHTML = '<div style="color:#7f849c;font-style:italic;">No user memories found</div>';
-        }
-
-        // Display character memories
-        const charMemDiv = document.getElementById('character-memories');
-        charMemDiv.innerHTML = '';
-        if (data.character_memories && data.character_memories.length > 0) {
-          data.character_memories.forEach(mem => {
-            const div = document.createElement('div');
-            div.className = 'memory-item character';
-            div.textContent = mem.fact;
-            charMemDiv.appendChild(div);
-          });
-        } else {
-          charMemDiv.innerHTML = '<div style="color:#7f849c;font-style:italic;">No character memories found</div>';
-        }
+        renderList('user-memories',      data.user_memories,      'No user memories');
+        renderList('character-memories', data.character_memories, 'No character memories');
+        renderList('safety-memories',    data.safety_memories,    'No safety flags — good!');
 
         document.getElementById('memory-output').style.display = 'block';
       } catch (err) {
-        alert('Network error loading memory: ' + err.message);
+        alert('Network error: ' + err.message);
       }
     }
 
@@ -393,21 +392,20 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
 
       bubble('user', msg);
 
-      const model = document.getElementById('model-select').value;
-      const reasoningEffort = document.getElementById('reasoning-select').value;
-      const extraBodyRaw = document.getElementById('extra-body-input').value.trim();
-      const systemPrompt = document.getElementById('system-prompt-input').value.trim();
-      const maxTurns = parseInt(document.getElementById('history-limit').value, 10) || 20;
-      const sandwichEnabled = document.getElementById('sandwich-toggle').checked;
+      const model            = document.getElementById('model-select').value;
+      const reasoningEffort  = document.getElementById('reasoning-select').value;
+      const extraBodyRaw     = document.getElementById('extra-body-input').value.trim();
+      const systemPrompt     = document.getElementById('system-prompt-input').value.trim();
+      const characterCard    = document.getElementById('character-card-input').value.trim();
+      const maxTurns         = parseInt(document.getElementById('history-limit').value, 10) || 20;
+      const sandwichEnabled  = document.getElementById('sandwich-toggle').checked;
+      const userId           = document.getElementById('user-id-input').value.trim() || 'user_test';
+      const charId           = document.getElementById('character-id-input').value.trim() || 'char_test';
 
       let extraBody = null;
       if (extraBodyRaw) {
         try { extraBody = JSON.parse(extraBodyRaw); }
-        catch (e) {
-          bubble('error', '⚠️ extra_body is not valid JSON: ' + e.message);
-          sendBtn.disabled = false;
-          return;
-        }
+        catch (e) { bubble('error', '⚠️ extra_body is not valid JSON: ' + e.message); sendBtn.disabled = false; return; }
       }
 
       const thinking = document.createElement('div');
@@ -417,10 +415,19 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       chatBox.scrollTop = chatBox.scrollHeight;
 
       const historySlice = history.slice(-(maxTurns * 2));
-      const body = { message: msg, model, history: historySlice, sandwich: sandwichEnabled };
-      if (extraBody) body.extra_body = extraBody;
+      const body = {
+        message:        msg,
+        model,
+        history:        historySlice,
+        sandwich:       sandwichEnabled,
+        user_id:        userId,
+        character_id:   charId,
+        memory_on:      true,
+      };
+      if (systemPrompt)  body.system_prompt  = systemPrompt;
+      if (characterCard) body.character_card = characterCard;
+      if (extraBody)     body.extra_body     = extraBody;
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-      if (systemPrompt) body.system_prompt = systemPrompt;
 
       try {
         const res = await fetch('/chat', {
@@ -437,7 +444,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
           const reply = data.reply || '(empty response)';
           bubble('bot', reply);
           updateTokens(data.usage);
-          history.push({ role: 'user', content: msg });
+          history.push({ role: 'user',      content: msg   });
           history.push({ role: 'assistant', content: reply });
           document.getElementById('t-hist').textContent = Math.floor(history.length / 2);
         }

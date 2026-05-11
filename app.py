@@ -17,8 +17,8 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-CORTECS_API_KEY     = os.environ.get("CORTECS_API_KEY", "")
-CORTECS_BASE_URL    = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
+CORTECS_API_KEY      = os.environ.get("CORTECS_API_KEY", "")
+CORTECS_BASE_URL     = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
 DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant.")
 
 # Injected silently before every user message when sandwich mode is ON.
@@ -75,6 +75,28 @@ def _make_client() -> OpenAI:
     return OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
 
 
+def _build_system_prompt(
+    base_system: str,
+    character_card: str,
+    memory_block: str,
+) -> str:
+    """
+    Assembles the final system prompt in the correct order:
+      1. System prompt  (rules, persona, safety)
+      2. Character card (optional — who the character is for THIS session)
+      3. Memory facts   (optional — what this character knows about THIS user)
+
+    The safety sandwich is NOT part of the system prompt; it is injected
+    into the message list immediately before the user turn (see /chat).
+    """
+    parts = [base_system.strip()]
+    if character_card:
+        parts.append("# Character Card\n" + character_card.strip())
+    if memory_block:
+        parts.append(memory_block.strip())
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -89,19 +111,29 @@ def chat():
     """
     Main chat endpoint.
 
+    Prompt assembly order
+    ---------------------
+    1. system_prompt   — base rules + persona
+    2. character_card  — character description (optional)
+    3. memory block    — retrieved facts about this user (optional)
+    [history turns]
+    4. sandwich        — safety reminder + ack (optional, right before user msg)
+    5. user message
+
     Request JSON fields
     -------------------
-    message        str   Required. The user's latest message.
-    model          str   Optional. Default qwen3.5-9b.
-    history        list  Optional. Previous [{role, content}] pairs.
-    system_prompt  str   Optional. Overrides DEFAULT_SYSTEM_PROMPT.
-    sandwich       bool  Optional. Enable safety sandwich injection.
-    extra_body     dict  Optional. Passed straight to the LLM API.
-    reasoning_effort str Optional. "low" | "medium" | "high".
-    user_id        str   Optional. Used for memory scoping. Defaults to "dev".
-    character_id   str   Optional. Used for memory scoping.
-    conversation_id str  Optional. Stored on extracted facts.
-    memory_on      bool  Optional. Default True. Set False to skip memory.
+    message          str   Required.
+    model            str   Optional. Default qwen3.5-9b.
+    history          list  Optional. Previous [{role, content}] pairs.
+    system_prompt    str   Optional. Overrides DEFAULT_SYSTEM_PROMPT.
+    character_card   str   Optional. Appended after system_prompt, before memory.
+    sandwich         bool  Optional. Enable safety sandwich injection.
+    extra_body       dict  Optional. Passed straight to the LLM API.
+    reasoning_effort str   Optional. "low" | "medium" | "high".
+    user_id          str   Optional. Used for memory scoping. Defaults to "dev".
+    character_id     str   Optional. Used for memory scoping.
+    conversation_id  str   Optional. Stored on extracted facts.
+    memory_on        bool  Optional. Default True.
     """
     if not CORTECS_API_KEY:
         return jsonify({"error": "CORTECS_API_KEY env var not set"}), 500
@@ -114,7 +146,8 @@ def chat():
     model            = data.get("model", "qwen3.5-9b")
     extra_body_raw   = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
     reasoning_effort = data.get("reasoning_effort")    # "low"|"medium"|"high"|None
-    system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    system_prompt    = (data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT).strip()
+    character_card   = (data.get("character_card") or "").strip()
     history          = data.get("history", [])
     sandwich_on      = bool(data.get("sandwich", False))
     user_id          = (data.get("user_id") or "dev").strip()
@@ -126,7 +159,7 @@ def chat():
         extra_body_raw = dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {}
         extra_body_raw["reasoning_effort"] = reasoning_effort
 
-    # --- Memory: build injection block BEFORE the LLM call ---
+    # ── 1. Memory: build injection block BEFORE the LLM call ─────────────────
     memory_block = ""
     used_fact_ids: list[int] = []
     if memory_on:
@@ -136,16 +169,19 @@ def chat():
             character_id=character_id,
         )
 
-    # --- Build the system prompt (inject memory block at the end if present) ---
-    full_system = system_prompt
-    if memory_block:
-        full_system = f"{system_prompt}\n\n{memory_block}"
+    # ── 2. Assemble system prompt: base → character card → memory ─────────────
+    full_system = _build_system_prompt(
+        base_system=system_prompt,
+        character_card=character_card,
+        memory_block=memory_block,
+    )
 
-    # --- Assemble message list ---
+    # ── 3. Assemble message list ───────────────────────────────────────────────
     messages = [{"role": "system", "content": full_system}] + list(history)
 
     if sandwich_on:
-        # Sandwich: inject a safety reminder + ack right before the user message.
+        # Safety sandwich: injected right before the user message so the
+        # safety rules are the last thing in context before generation.
         messages += [
             {"role": "user",      "content": SAFETY_REMINDER},
             {"role": "assistant", "content": SAFETY_ACK},
@@ -153,7 +189,7 @@ def chat():
 
     messages.append({"role": "user", "content": user_message})
 
-    # --- Call the LLM ---
+    # ── 4. Call the LLM ───────────────────────────────────────────────────────
     try:
         client = _make_client()
         kwargs = dict(
@@ -174,8 +210,7 @@ def chat():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
-    # --- Memory: extract facts AFTER we have the reply (non-blocking) ---
-    # We run this in a daemon thread so the HTTP response is not delayed.
+    # ── 5. Memory: extract facts AFTER reply (non-blocking) ───────────────────
     if memory_on:
         _run_extraction_async(
             user_message=user_message,
@@ -188,7 +223,7 @@ def chat():
 
     return jsonify({
         "reply": reply,
-        "memory_block": memory_block,   # visible in the debug panel
+        "memory_block": memory_block,
         "usage": {
             "prompt_tokens":     getattr(usage, "prompt_tokens",     None),
             "completion_tokens": getattr(usage, "completion_tokens", None),
@@ -200,21 +235,42 @@ def chat():
 @app.route("/memory/debug", methods=["GET"])
 def memory_debug():
     """
-    Debug endpoint: returns all stored memory facts for a user.
-    Usage: GET /memory/debug?user_id=dev
+    Debug endpoint — returns stored memory facts split by scope.
+    GET /memory/debug?user_id=dev&character_id=char_test
     """
     if not os.environ.get("DATABASE_URL"):
         return jsonify({"error": "DATABASE_URL not set — memory is disabled"}), 503
 
-    user_id = (request.args.get("user_id") or "dev").strip()
+    user_id      = (request.args.get("user_id")      or "dev").strip()
+    character_id = (request.args.get("character_id") or "").strip() or None
+
     try:
         facts = db.fetch_all_facts_for_debug(user_id)
-        # Convert datetimes to ISO strings for JSON serialisation.
         for f in facts:
-            for key in ("as_of", "created_at"):
+            for key in ("as_of", "created_at", "updated_at", "last_used_at"):
                 if f.get(key) is not None:
                     f[key] = f[key].isoformat()
-        return jsonify({"user_id": user_id, "facts": facts})
+
+        # Split by scope so the UI can show them in separate sections.
+        # user_private  → belongs only to this user, scoped to one character.
+        # character_private → what a character has "learned" (NOT shared across characters).
+        # safety_global → cross-character safety flags ONLY.
+        user_memories      = [f for f in facts if f.get("scope") == "user_private"
+                               and (character_id is None or f.get("character_id") == character_id)]
+        character_memories = [f for f in facts if f.get("scope") == "character_private"
+                               and (character_id is None or f.get("character_id") == character_id)]
+        safety_memories    = [f for f in facts if f.get("scope") == "safety_global"]
+
+        # Normalise key for display
+        def _normalise(lst):
+            return [{"fact": f.get("fact_text", ""), **f} for f in lst]
+
+        return jsonify({
+            "user_id":            user_id,
+            "user_memories":      _normalise(user_memories),
+            "character_memories": _normalise(character_memories),
+            "safety_memories":    _normalise(safety_memories),
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -231,10 +287,6 @@ def _run_extraction_async(
     model: str,
     used_fact_ids: list[int],
 ) -> None:
-    """
-    Spin up a daemon thread to run fact extraction and last_used_at updates
-    without blocking the HTTP response.
-    """
     def _task():
         try:
             client = _make_client()
@@ -250,8 +302,7 @@ def _run_extraction_async(
         except Exception as exc:
             log.error("background extraction failed: %s", exc)
 
-    thread = threading.Thread(target=_task, daemon=True)
-    thread.start()
+    threading.Thread(target=_task, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

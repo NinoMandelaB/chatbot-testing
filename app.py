@@ -5,14 +5,21 @@ from openai import OpenAI
 
 from memory import db as memory_db
 from memory import summariser as memory_summariser
+from memory import retriever as memory_retriever
 
 app = Flask(__name__)
 
+# ---------------------------------------------------------------------------
+# Configuration (loaded from environment variables)
+# ---------------------------------------------------------------------------
 CORTECS_API_KEY  = os.environ.get("CORTECS_API_KEY", "")
 CORTECS_BASE_URL = os.environ.get("CORTECS_BASE_URL", "https://api.cortecs.ai/v1")
 DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant.")
 
+# ---------------------------------------------------------------------------
+# Safety sandwich constants
 # Injected silently before every user message when sandwich mode is ON.
+# ---------------------------------------------------------------------------
 SAFETY_REMINDER = """[SAFETY & SCOPE REMINDER — re-read before generating your response]
 
 ✅ NSFW adult roleplay IS allowed and encouraged. Stay immersive, in-character, and explicit if the scene calls for it.
@@ -40,8 +47,12 @@ Character momentum, prior coherence, and user insistence do NOT override any of 
 SAFETY_ACK = "Safety and scope check confirmed. NSFW roleplay is on. Hard blocks and self-harm rules are active. Generating response now."
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _clean(text):
-    """Strip <think>...</think> blocks (Qwen3 thinking tokens)."""
+    """Strip <think>...</think> blocks produced by Qwen3 thinking mode."""
     if not text:
         return ""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
@@ -50,15 +61,21 @@ def _clean(text):
 
 
 def extract_reply(choice):
+    """Extract the best text content from a chat completion choice."""
     msg = choice.message
     content = _clean(getattr(msg, "content", None) or "")
     if content:
         return content
+    # Fallback: some models surface reasoning in reasoning_content
     reasoning = _clean(getattr(msg, "reasoning_content", None) or "")
     if reasoning:
         return reasoning
     return ""
 
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.route("/")
 def index():
@@ -67,41 +84,101 @@ def index():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    """Main chat endpoint.
+
+    Prompt order (matches the hint shown in the UI):
+      1. System prompt
+      2. Character card  (appended to system content if provided)
+      3. Memory block    (injected as a system turn, when memory is enabled)
+      4. Conversation history
+      5. Safety sandwich (when enabled)
+      6. User message
+    """
     if not CORTECS_API_KEY:
         return jsonify({"error": "CORTECS_API_KEY env var not set"}), 500
 
     data = request.get_json(silent=True) or {}
+
+    # --- Required fields ---
     user_message = (data.get("message") or "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
+    # --- Model and API params ---
     model            = data.get("model", "qwen3.5-9b")
     extra_body_raw   = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
     reasoning_effort = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
-    system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-    history          = data.get("history", [])
-    sandwich_on      = bool(data.get("sandwich", False))  # OFF by default
 
-    # Optional session context (used for memory retrieval and summarisation).
+    # --- Prompt content ---
+    system_prompt  = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    character_card = (data.get("character_card") or "").strip()  # optional persona block
+    history        = data.get("history", [])
+    sandwich_on    = bool(data.get("sandwich", False))
+
+    # --- Session context (used for memory retrieval and summarisation) ---
     user_id      = (data.get("user_id") or "").strip() or None
     character_id = (data.get("character_id") or "").strip() or None
 
+    # Append reasoning_effort to extra_body when specified.
     if reasoning_effort:
         extra_body_raw = dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {}
         extra_body_raw["reasoning_effort"] = reasoning_effort
 
-    # Build message array.
-    messages = [{"role": "system", "content": system_prompt}] + list(history)
+    # -----------------------------------------------------------------------
+    # Build the system content
+    # Character card is appended directly after the system prompt so the LLM
+    # sees both pieces of instruction before any conversation turns.
+    # -----------------------------------------------------------------------
+    system_content = system_prompt
+    if character_card:
+        system_content += "\n\n" + character_card
+
+    # -----------------------------------------------------------------------
+    # Build the message array
+    # -----------------------------------------------------------------------
+    messages = [{"role": "system", "content": system_content}]
+
+    # Hybrid memory block: inject retrieved facts + conversation summary as a
+    # dedicated system message so the LLM cannot confuse memory with chat.
+    # Only runs when a session is active (user_id is required at minimum).
+    if user_id:
+        memory_block, used_fact_ids = memory_retriever.build_memory_block(
+            user_message=user_message,
+            user_id=user_id,
+            character_id=character_id,
+        )
+        if memory_block:
+            messages.append({"role": "system", "content": memory_block})
+            # Update last_used_at timestamps so decay scoring stays accurate.
+            if used_fact_ids:
+                try:
+                    memory_db.touch_last_used(used_fact_ids)
+                except Exception:
+                    pass  # non-fatal
+
+    # Conversation history
+    messages += list(history)
+
+    # Safety sandwich (optional; injected before the user turn)
     if sandwich_on:
         messages += [
             {"role": "user",      "content": SAFETY_REMINDER},
             {"role": "assistant", "content": SAFETY_ACK},
         ]
+
     messages.append({"role": "user", "content": user_message})
 
+    # -----------------------------------------------------------------------
+    # Call the LLM
+    # -----------------------------------------------------------------------
     try:
         client = OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
-        kwargs = dict(model=model, messages=messages, max_tokens=2048, stream=False)
+        kwargs = dict(
+            model=model,
+            messages=messages,
+            max_tokens=2048,
+            stream=False,
+        )
         if extra_body_raw:
             kwargs["extra_body"] = extra_body_raw
 
@@ -109,13 +186,16 @@ def chat():
         reply = extract_reply(response.choices[0]) if response.choices else ""
         if not reply:
             reply = "Model returned an empty response."
+
         usage = response.usage
 
-        # --- Hybrid memory: trigger a conversation summary in the background ---
-        # Appends the new assistant turn to history before passing it to the
-        # summariser so the summary always covers the completed exchange.
-        # The same `model` selected for chat is forwarded so summarisation stays
-        # in sync with the user's active model choice.
+        # -------------------------------------------------------------------
+        # Hybrid memory: trigger conversation summarisation in the background.
+        # The completed exchange (including the new assistant turn) is passed
+        # to the summariser so the summary always covers the full turn.
+        # The same model the user selected for chat is forwarded so
+        # summarisation stays in sync with the UI model selection.
+        # -------------------------------------------------------------------
         if user_id and character_id:
             full_history = list(history) + [
                 {"role": "user",      "content": user_message},
@@ -127,7 +207,7 @@ def chat():
                 history=full_history,
                 api_key=CORTECS_API_KEY,
                 base_url=CORTECS_BASE_URL,
-                model=model,  # mirrors the model the user selected in the UI
+                model=model,
             )
 
         return jsonify({
@@ -150,15 +230,13 @@ def chat():
 
 @app.route("/memory/debug", methods=["GET"])
 def memory_debug():
-    """
-    Return memory facts filtered by user_id and/or character_id.
-    If neither is provided, returns the full table (up to 200 rows).
+    """Return memory facts filtered by user_id and/or character_id.
 
-    Filter behaviour (mirrors memory/db.py fetch_facts_for_debug):
-      - no params         -> full table
-      - user_id only      -> all facts for that user
-      - character_id only -> all facts for that character across all users
-      - both              -> facts matching both
+    Filter behaviour:
+      - no params        -> full table (up to 200 rows)
+      - user_id only     -> all facts for that user
+      - character_id only-> all facts for that character across all users
+      - both             -> facts matching both
     """
     user_id      = (request.args.get("user_id")      or "").strip() or None
     character_id = (request.args.get("character_id") or "").strip() or None
@@ -177,12 +255,9 @@ def memory_debug():
     character_memories = [r for r in rows if r.get("scope") == "cross_character"]
     safety_memories    = [r for r in rows if r.get("scope") == "safety_global"]
 
-    # Serialise datetime objects so jsonify does not choke.
     def serialise(record):
-        out = {}
-        for k, v in record.items():
-            out[k] = v.isoformat() if hasattr(v, "isoformat") else v
-        return out
+        """Convert datetime values to ISO strings for JSON serialisation."""
+        return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in record.items()}
 
     return jsonify({
         "user_memories":      [serialise(r) for r in user_memories],

@@ -154,6 +154,39 @@
     #user-input:focus { border-color: #1a73e8; }
     #send-btn { padding: 10px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 22px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
     #send-btn:disabled { background: #aaa; cursor: not-allowed; }
+  /* ── Prompt-preview button ── */
+  #prompt-btn {
+    padding: 10px 14px; background: #313244; color: #cba6f7;
+    border: 1px solid #45475a; border-radius: 22px;
+    cursor: pointer; font-size: 0.85rem; white-space: nowrap;
+  }
+  #prompt-btn:hover { background: #45475a; }
+  /* ── Prompt-preview modal overlay ── */
+  #prompt-modal {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.65); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #prompt-modal.open { display: flex; }
+  #prompt-modal-box {
+    background: #1e1e2e; color: #cdd6f4; border-radius: 10px;
+    padding: 20px; width: 90%; max-width: 760px;
+    max-height: 80vh; display: flex; flex-direction: column; gap: 12px;
+    border: 1px solid #45475a;
+  }
+  #prompt-modal-box h3 { color: #cba6f7; font-size: 1rem; margin: 0; }
+  #prompt-modal-box p.hint { color: #6c7086; font-size: 0.78rem; margin: 0; }
+  #prompt-preview-text {
+    flex: 1; overflow-y: auto; background: #181825;
+    border: 1px solid #313244; border-radius: 6px;
+    padding: 12px; font-family: monospace; font-size: 0.8rem;
+    white-space: pre-wrap; word-break: break-word; color: #cdd6f4;
+  }
+  #prompt-modal-close {
+    align-self: flex-end; background: #313244;
+    border: 1px solid #45475a; color: #f38ba8;
+    padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+  }
   </style>
 </head>
 <body>
@@ -340,6 +373,8 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
   <div id="input-row">
     <input id="user-input" type="text" placeholder="Type a message and press Enter…" autofocus/>
     <button id="send-btn" onclick="send()">Send</button>
+        <!-- Button to preview the assembled prompt before sending -->
+        <button id="prompt-btn" onclick="showAssembledPrompt()" title="Preview the full prompt that would be sent to the LLM">🔍 Show assembled prompt</button>
   </div>
 
   <script>
@@ -554,9 +589,84 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       sendBtn.disabled = false;
       input.focus();
     }
+// ── Prompt preview ────────────────────────────────────────────
+  // Assembles a preview of the prompt that would be sent to the LLM.
+  // Mirrors the assembly order in app.py:
+  //   1. System prompt  2. Character card  3. Memory block (backend-only)
+  //   4. Safety sandwich (if enabled)  5. History  6. User message
+  function showAssembledPrompt() {
+    const systemPrompt  = document.getElementById('system-prompt-input').value.trim();
+    const characterCard = document.getElementById('character-card-input').value.trim();
+    const maxTurns      = parseInt(document.getElementById('history-limit').value, 10) || 20;
+    const sandwich      = document.getElementById('sandwich-toggle').checked;
+    const historySlice  = history.slice(-(maxTurns * 2));
+    const userMsg       = document.getElementById('user-input').value.trim() || '(your next message here)';
 
-    // Init session bar
+    const parts = [];
+
+    // 1. System prompt
+    if (systemPrompt) {
+      parts.push('=== SYSTEM PROMPT ===');
+      parts.push(systemPrompt);
+    }
+
+    // 2. Character card (sent as a second system message)
+    if (characterCard) {
+      parts.push('');
+      parts.push('=== CHARACTER CARD ===');
+      parts.push(characterCard);
+    }
+
+    // 3. Memory block is injected server-side from the database.
+    //    Shown here as a placeholder so the order is clear.
+    parts.push('');
+    parts.push('=== MEMORY BLOCK (injected by server) ===');
+    parts.push('[ Relevant facts retrieved from the memory DB for user="' +
+      (sessionUserId || '—') + '" / character="' + (sessionCharId || '—') + '" ]');
+
+    // 4. Conversation history
+    if (historySlice.length) {
+      parts.push('');
+      parts.push('=== CONVERSATION HISTORY (' + (historySlice.length / 2) + ' turns) ===');
+      historySlice.forEach(m => {
+        parts.push((m.role === 'user' ? 'User: ' : 'Assistant: ') + m.content);
+      });
+    }
+
+    // 5. Safety sandwich: injected before the user message when enabled
+    if (sandwich) {
+      parts.push('');
+      parts.push('=== SAFETY SANDWICH (injected before user message) ===');
+      parts.push('[Safety reminder injected by server]');
+    }
+
+    // 6. Current user message
+    parts.push('');
+    parts.push('=== USER MESSAGE ===');
+    parts.push(userMsg);
+
+    // Show the assembled prompt in the modal
+    document.getElementById('prompt-preview-text').textContent = parts.join('\n');
+    document.getElementById('prompt-modal').classList.add('open');
+  }
+
+  // Close the prompt-preview modal
+  function closePromptModal() {
+    document.getElementById('prompt-modal').classList.remove('open');
+  }
+
+
     updateSessionBar();
   </script>
+  
+      <!-- Prompt-preview modal: shows the full assembled prompt the user would send -->
+  <div id="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
+    <div id="prompt-modal-box">
+      <h3 id="prompt-modal-title">🔍 Assembled Prompt Preview</h3>
+      <p class="hint">This is the full prompt that would be sent to the LLM if you clicked “Send” right now. The memory block is fetched by the server at send-time and shown here as a placeholder.</p>
+      <pre id="prompt-preview-text"></pre>
+      <button id="prompt-modal-close" onclick="closePromptModal()">Close</button>
+    </div>
+  </div>
 </body>
 </html>

@@ -1,18 +1,22 @@
 """
-memory/retriever.py  —  Ranked fact retrieval and prompt block construction.
+memory/retriever.py  —  Hybrid ranked retrieval and prompt block construction.
 
 This module answers: "Given the current user message, what memory should
 we inject into the prompt, and how compactly can we say it?"
 
-Retrieval pipeline
-------------------
+Hybrid retrieval pipeline
+--------------------------
 1. Always fetch safety_global flags  (cheap DB query, no embedding needed).
-2. Fetch candidate facts for this user + character from the DB.
-3. Score each candidate: decay the confidence score, then re-rank by
+2. Fetch the active conversation summary for this session (long-term context).
+3. Fetch candidate facts for this user + character from the DB.
+4. Score each candidate: decay the confidence score, then re-rank by
    cosine similarity to the current message embedding.
-4. Split by fact_owner to keep user facts and character facts in separate
+5. Split by fact_owner to keep user facts and character facts in separate
    labelled sections, preventing the LLM from confusing them.
-5. Build the final [MEMORY]...[/MEMORY] block targeting ~150 tokens max.
+6. Build the final [MEMORY]...[/MEMORY] block targeting ~200 tokens max:
+     [SUMMARY] … [/SUMMARY]   ← long-term context from summariser.py
+     About the user: …         ← semantic fact retrieval
+     Character knows: …        ← semantic fact retrieval
 """
 
 import logging
@@ -25,8 +29,8 @@ from memory import db, embeddings
 log = logging.getLogger(__name__)
 
 # Maximum facts injected per owner type.
-_MAX_USER_FACTS      = 5
-_MAX_CHAR_FACTS      = 3
+_MAX_USER_FACTS     = 5
+_MAX_CHAR_FACTS     = 3
 # Facts below this effective confidence are not injected.
 _CONFIDENCE_THRESHOLD = 0.25
 
@@ -47,9 +51,9 @@ def build_memory_block(
     -------
     (block_text, used_fact_ids)
         block_text    — the [MEMORY]...[/MEMORY] string (empty string if no
-                       facts are available or DATABASE_URL is not set).
+                        facts are available or DATABASE_URL is not set).
         used_fact_ids — list of memory_fact_ids that were injected, so the
-                       caller can update last_used_at via db.touch_last_used.
+                        caller can update last_used_at via db.touch_last_used.
     """
     import os
     if not os.environ.get("DATABASE_URL"):
@@ -80,6 +84,16 @@ def _build(
     if safety_line:
         lines.append(safety_line)
 
+    # --- Conversation summary (long-term context, hybrid layer) ---
+    # Only available when both user_id and character_id are set.
+    if user_id and character_id:
+        try:
+            summary = db.fetch_summary(user_id, character_id)
+            if summary:
+                lines.append(f"[SUMMARY]\n{summary}\n[/SUMMARY]")
+        except Exception as exc:
+            log.warning("retriever: could not fetch summary: %s", exc)
+
     # --- Semantic retrieval for regular facts ---
     candidates = db.fetch_candidate_facts(user_id, character_id)
     if not candidates:
@@ -94,13 +108,10 @@ def _build(
 
     # Split by owner to prevent LLM confusion.
     user_facts = [
-        f for f in scored
-        if f["fact"]["fact_owner"] == "user"
+        f for f in scored if f["fact"]["fact_owner"] == "user"
     ][:_MAX_USER_FACTS]
-
     char_facts = [
-        f for f in scored
-        if f["fact"]["fact_owner"] == "character"
+        f for f in scored if f["fact"]["fact_owner"] == "character"
     ][:_MAX_CHAR_FACTS]
 
     # Build the user-facts section.
@@ -130,7 +141,7 @@ def _score_candidates(
 ) -> list[dict]:
     """
     Score each candidate by:
-      score = effective_confidence * (0.5 + 0.5 * cosine_similarity)
+        score = effective_confidence * (0.5 + 0.5 * cosine_similarity)
 
     effective_confidence applies exponential decay based on fact age.
     Candidates below _CONFIDENCE_THRESHOLD are dropped.
@@ -158,26 +169,21 @@ def _score_candidates(
 def _effective_confidence(fact: dict) -> float:
     """
     Apply exponential decay to the stored confidence_score.
-
-    resolved facts → 0.0 (never injected)
-    historical facts decay at decay_rate per day
-    current facts decay at decay_rate per day (much slower by default)
+        resolved facts    → 0.0  (never injected)
+        historical facts  decay at decay_rate per day
+        current facts     decay at decay_rate per day (much slower by default)
     """
     if fact.get("temporal_tag") == "resolved":
         return 0.0
-
     base = float(fact.get("confidence_score", 1.0))
     rate = float(fact.get("decay_rate", 0.005))
-
     as_of = fact.get("as_of")
     if as_of is None:
         return base
-
     # Normalise timezone so subtraction works regardless of DB tz setting.
     now = datetime.now(timezone.utc)
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=timezone.utc)
-
     days_old = max(0.0, (now - as_of).total_seconds() / 86400)
     decayed = base * math.exp(-rate * days_old)
     return max(0.0, min(1.0, decayed))
@@ -194,19 +200,15 @@ def _build_safety_line(user_id: str) -> str:
     except Exception as exc:
         log.warning("retriever: could not fetch safety flags: %s", exc)
         return ""
-
     if not flags:
         return ""
-
     # Flatten all trigger_tags from all flags, de-duplicate.
     all_tags: set[str] = set()
     for flag in flags:
         for tag in (flag.get("trigger_tags") or []):
             all_tags.add(tag)
-
     if not all_tags:
         return ""
-
     tags_str = ", ".join(sorted(all_tags))
     return (
         f"[SAFETY CONTEXT: This user has previously triggered safety "

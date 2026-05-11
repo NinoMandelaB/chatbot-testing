@@ -2,15 +2,22 @@
 memory/extractor.py  —  LLM-based fact extraction and safety classification.
 
 After every assistant reply this module:
-  1. Calls the LLM with a compact extraction prompt to pull facts from the
-     latest user message (not the assistant reply — we learn about the USER).
-  2. Classifies any safety triggers in the user message.
-  3. Detects resolution signals ("I feel better now") and marks stale facts
-     resolved via db.resolve_facts_by_keyword.
+  1. Keyword pre-screens the user message for safety violations and writes
+     safety_global facts to the DB (zero extra LLM tokens).
+  2. Calls the LLM with a dual-purpose prompt that:
+       a. Extracts personal facts about the USER.
+       b. Classifies safety violations missed by the keyword pre-screen
+          (e.g. implicit threats like "I want to kill someone").
+  3. Detects resolution signals and marks stale facts as resolved.
   4. Persists new facts with embeddings via db.insert_fact.
 
-Token budget: the extraction call uses ~120 prompt tokens + a tiny
-JSON reply.  It is skipped entirely when DATABASE_URL is not configured.
+Safety facts use scope='safety_global' so they are injected into every
+future session regardless of character, giving the model contextual
+awareness across sessions (e.g. user threatened violence → refuse gun
+shop question even in an unrelated chat).
+
+Token budget: ~200 prompt tokens + small JSON reply per turn.
+Skipped entirely when DATABASE_URL is not configured.
 """
 
 import json
@@ -25,8 +32,11 @@ from memory import db, embeddings
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Safety trigger categories and their keyword signals.
-# The LLM is the primary classifier; this dict is a fast pre-screen.
+# Safety keyword pre-screen
+# ---------------------------------------------------------------------------
+# Fast zero-token check run BEFORE the LLM call.
+# Catches explicit, unambiguous trigger phrases.
+# The LLM classifier (below) catches implicit threats the keywords miss.
 # ---------------------------------------------------------------------------
 SAFETY_KEYWORDS: dict[str, list[str]] = {
     "self_harm": [
@@ -35,54 +45,77 @@ SAFETY_KEYWORDS: dict[str, list[str]] = {
         "overdose", "don't want to live",
     ],
     "violence_planning": [
-        "school shooting", "mass shooting", "bomb", "attack plan",
-        "kill plan", "how to kill", "weapon",
+        # Explicit multi-word phrases first (most specific)
+        "school shooting", "mass shooting", "attack plan", "kill plan",
+        "how to kill", "i will kill", "i want to kill", "want to kill",
+        "going to kill", "gonna kill", "planning to kill",
+        "i'll kill", "murder someone", "i want to murder",
+        "bomb", "weapon",
     ],
     "csam": [
-        "child porn", "csam", "underage sex", "minor",
+        "child porn", "csam", "underage sex",
     ],
 }
 
-# Resolution signals: if a user message contains any of these phrases we
-# attempt to resolve related stored facts rather than add new ones.
+# Resolution signals: phrases that indicate a previously flagged issue is
+# now resolved. Keyed by the DB keyword to mark as resolved.
 RESOLUTION_SIGNALS: list[tuple[str, list[str]]] = [
-    # (keyword to resolve in DB,  triggers that indicate resolution)
-    ("suicide",    ["feel better", "got help", "i'm ok", "doing well", "i am fine", "therapy"]),
-    ("suicidal",   ["feel better", "got help", "i'm ok", "doing well", "i am fine"]),
-    ("self harm",  ["stopped", "recovered", "doing better", "in therapy"]),
-    ("depressed",  ["feel better", "feeling better", "improved", "therapy helping"]),
+    ("suicide",   ["feel better", "got help", "i'm ok", "doing well", "i am fine", "therapy"]),
+    ("suicidal",  ["feel better", "got help", "i'm ok", "doing well", "i am fine"]),
+    ("self harm", ["stopped", "recovered", "doing better", "in therapy"]),
+    ("depressed", ["feel better", "feeling better", "improved", "therapy helping"]),
 ]
 
 # ---------------------------------------------------------------------------
-# Extraction prompt
+# Dual-purpose LLM prompt
 # ---------------------------------------------------------------------------
+# One LLM call per turn handles BOTH fact extraction AND safety classification.
+# This catches implicit threats and nuanced violations that keyword matching
+# cannot detect (e.g. "I want to kill someone", "I'm planning something bad").
+# ---------------------------------------------------------------------------
+_EXTRACTION_SYSTEM = """You are a memory and safety classifier for a chat application.
+Analyse the user message and return ONLY a JSON object with this exact shape
+(no markdown, no extra keys):
 
-_EXTRACTION_SYSTEM = """You extract factual memory from a user message.
-Return ONLY a JSON object with this exact shape (no markdown, no extra keys):
 {
-  "facts": [
-    {
-      "text": "<one short factual sentence about the user>",
-      "owner": "user",
-      "scope": "user_private",
-      "temporal_tag": "current",
-      "importance": 1.0
-    }
+  "safety_violations": [
+    {"category": "", "summary": ""}
   ],
-  "resolution_signals": ["<keyword to resolve if the message implies a past issue is now resolved>"]
+  "facts": [
+    {"text": "", "owner": "user", "scope": "user_private", "temporal_tag": "current", "importance": 1.0}
+  ],
+  "resolution_signals": [""]
 }
 
-Rules:
-- Extract facts about the USER only. Never invent facts about the character.
-- owner is always "user" for facts from the user's message.
-- scope is "user_private" by default. Use "cross_character" only for persistent
-  identity facts (name, age, city).
-- temporal_tag: "current" if the fact is true now, "historical" if the user
-  is describing the past, "resolved" if the user says something is no longer true.
-- importance: 1.0 default, 2.0 for emotional distress, 3.0 for crisis signals.
-- Return an empty facts list [] if there is nothing worth storing.
-- resolution_signals: list of plain keywords (e.g. "suicide") that the user
-  has indicated are now resolved. Empty list [] if none."""
+SAFETY CLASSIFICATION RULES (safety_violations list):
+- Populate this list if the user message expresses ANY of:
+    * Intent or desire to harm, kill, or injure another person
+      (even phrased casually: "I want to kill someone", "I could kill him")
+    * Self-harm or suicidal ideation
+    * Planning violence (weapons, attacks, threats)
+    * CSAM or sexual content involving minors
+- Each entry: category is one of [violence_planning, self_harm, csam],
+  summary is a short factual description (e.g. "User expressed desire to kill someone").
+- Leave as empty list [] if no violation is present.
+
+FACT EXTRACTION RULES (facts list):
+- Extract ONLY objective, useful personal facts about the USER.
+- NEVER store:
+    * Denials or self-assessments about rule compliance
+      (e.g. "I did not violate any rules", "I haven't done anything wrong")
+    * Meta-commentary about the conversation or the AI system
+    * The assistant's statements or character descriptions
+    * Greetings, filler, or content with no durable personal meaning
+- owner is always "user".
+- scope: use "cross_character" only for durable identity facts (name, age, city);
+  use "user_private" for everything else.
+- temporal_tag: "current" = true now, "historical" = past, "resolved" = no longer true.
+- importance: 1.0 default, 2.0 for emotional distress, 3.0 for crisis or safety signals.
+- Return empty list [] if nothing is worth storing.
+
+RESOLUTION SIGNALS (resolution_signals list):
+- List plain keywords (e.g. "suicide") that the user explicitly says are now resolved.
+- Return empty list [] if none."""
 
 
 # ---------------------------------------------------------------------------
@@ -98,48 +131,60 @@ def extract_and_store(
     model: str,
 ) -> list[int]:
     """
-    Extract facts from *user_message*, classify safety triggers, and persist
-    everything to the database. Returns a list of inserted memory_fact_ids.
+    Extract facts and safety signals from *user_message*, then persist to DB.
 
-    If DATABASE_URL is absent the function is a no-op (returns []).
-    This keeps the app runnable without a DB during local dev.
+    Pipeline:
+      1. Keyword pre-screen  — zero-token, catches explicit phrases.
+      2. LLM dual pass       — catches implicit threats + extracts facts.
+      3. Resolution handling — marks stale facts resolved.
+      4. Fact persistence    — embeds and stores new facts.
+
+    Returns a list of inserted memory_fact_ids.
+    No-op (returns []) when DATABASE_URL is not set.
+    All errors are caught and logged; this function never raises.
     """
     if not os.environ.get("DATABASE_URL"):
         return []
 
     inserted_ids: list[int] = []
 
-    # --- 1. Safety pre-screen (zero extra tokens) ---
-    _handle_safety_triggers(user_message, user_id, conversation_id)
+    # Step 1 — Keyword pre-screen (zero extra LLM tokens).
+    # Catches explicit, unambiguous phrases before calling the LLM.
+    _handle_keyword_safety(user_message, user_id, conversation_id)
 
-    # --- 2. Resolution detection (keyword-only, zero extra tokens) ---
+    # Step 2 — Resolution signals via keywords (also zero tokens).
     _handle_resolution_signals(user_message, user_id)
 
-    # --- 3. LLM extraction ---
+    # Step 3 — LLM dual pass: implicit safety + fact extraction.
     raw = _call_extraction_llm(user_message, llm_client, model)
     if raw is None:
         return inserted_ids
 
-    # --- 4. Process resolution signals from LLM output ---
+    # Step 4 — Persist LLM-detected safety violations not caught by keywords.
+    for violation in raw.get("safety_violations", []):
+        category = (violation.get("category") or "").strip()
+        summary  = (violation.get("summary")  or "").strip()
+        if not category or not summary:
+            continue
+        _write_safety_flag(category, summary, user_id, conversation_id)
+
+    # Step 5 — Process LLM-identified resolution signals.
     for keyword in raw.get("resolution_signals", []):
         if keyword and isinstance(keyword, str):
             count = db.resolve_facts_by_keyword(user_id, keyword.strip())
             log.debug("extractor: resolved %d facts for keyword '%s'", count, keyword)
 
-    # --- 5. Persist new facts ---
+    # Step 6 — Persist new personal facts.
     for fact in raw.get("facts", []):
         text = (fact.get("text") or "").strip()
         if not text:
             continue
+        owner      = fact.get("owner", "user")
+        scope      = fact.get("scope", "user_private")
+        temporal   = fact.get("temporal_tag", "current")
+        importance = float(fact.get("importance", 1.0))
 
-        owner       = fact.get("owner", "user")
-        scope       = fact.get("scope", "user_private")
-        temporal    = fact.get("temporal_tag", "current")
-        importance  = float(fact.get("importance", 1.0))
-
-        # Embed the fact text for semantic retrieval.
         embedding = embeddings.encode(text)
-
         fact_id = db.insert_fact(
             user_id=user_id,
             fact_text=text,
@@ -149,7 +194,7 @@ def extract_and_store(
             character_id=character_id,
             confidence_score=1.0,
             importance_score=importance,
-            # 'current' facts decay slowly; 'historical' faster.
+            # Current facts decay slowly; historical facts faster.
             decay_rate=0.005 if temporal == "current" else 0.02,
             conversation_id=conversation_id,
             embedding=embedding,
@@ -164,50 +209,71 @@ def extract_and_store(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _handle_safety_triggers(
+def _handle_keyword_safety(
     message: str,
     user_id: str,
     conversation_id: Optional[str],
 ) -> None:
     """
     Keyword-scan the message and write safety_global facts for any matches.
-    This runs before the LLM call so safety flags are never skipped even
-    if the LLM extraction call fails.
+
+    Runs BEFORE the LLM call so safety flags are written even if the
+    LLM extraction call subsequently fails.
+    Deduplication is intentionally skipped here: duplicate safety flags are
+    far less harmful than a missed one.
     """
     lower = message.lower()
     for category, keywords in SAFETY_KEYWORDS.items():
         if any(kw in lower for kw in keywords):
-            # Use a short summary as the stored fact text.
-            summary = f"User triggered safety category: {category}"
-            embedding = embeddings.encode(summary)
-            try:
-                db.insert_fact(
-                    user_id=user_id,
-                    fact_text=summary,
-                    fact_owner="system",
-                    scope="safety_global",
-                    temporal_tag="current",
-                    character_id=None,   # safety facts have no character scope
-                    confidence_score=1.0,
-                    importance_score=10.0,
-                    decay_rate=0.0,      # safety flags never auto-decay
-                    trigger_tags=[category],
-                    conversation_id=conversation_id,
-                    embedding=embedding,
-                )
-                log.warning(
-                    "extractor: safety flag written [%s] for user %s",
-                    category, user_id,
-                )
-            except Exception as exc:
-                # Never let a DB error block the user's chat response.
-                log.error("extractor: failed to write safety flag: %s", exc)
+            summary = f"User expressed safety concern: {category}"
+            _write_safety_flag(category, summary, user_id, conversation_id)
+
+
+def _write_safety_flag(
+    category: str,
+    summary: str,
+    user_id: str,
+    conversation_id: Optional[str],
+) -> None:
+    """
+    Persist a single safety_global fact to the DB.
+
+    Safety facts:
+      - scope='safety_global'  — injected in every future session regardless
+        of which character the user talks to.
+      - decay_rate=0.0         — never auto-expire.
+      - importance_score=10.0  — always surfaces at the top of the memory block.
+    """
+    embedding = embeddings.encode(summary)
+    try:
+        db.insert_fact(
+            user_id=user_id,
+            fact_text=summary,
+            fact_owner="system",
+            scope="safety_global",
+            temporal_tag="current",
+            character_id=None,   # safety facts apply across all characters
+            confidence_score=1.0,
+            importance_score=10.0,
+            decay_rate=0.0,      # safety flags never auto-decay
+            trigger_tags=[category],
+            conversation_id=conversation_id,
+            embedding=embedding,
+        )
+        log.warning(
+            "extractor: safety flag written [%s] for user %s: %s",
+            category, user_id, summary,
+        )
+    except Exception as exc:
+        # Never let a DB error block the user's chat response.
+        log.error("extractor: failed to write safety flag: %s", exc)
 
 
 def _handle_resolution_signals(message: str, user_id: str) -> None:
     """
-    Keyword-based resolution: if the user says they feel better etc.,
-    mark related non-safety facts as resolved before the LLM runs.
+    Keyword-based resolution: if the user indicates a past issue is resolved
+    (e.g. "I feel better now"), mark related non-safety facts as resolved
+    before the LLM extraction runs.
     """
     lower = message.lower()
     for keyword, signals in RESOLUTION_SIGNALS:
@@ -226,8 +292,8 @@ def _call_extraction_llm(
     model: str,
 ) -> Optional[dict]:
     """
-    Call the LLM with the extraction prompt and return the parsed JSON dict.
-    Returns None on any error to degrade gracefully.
+    Call the LLM with the dual-purpose prompt and return the parsed JSON dict.
+    Returns None on any error so the caller can degrade gracefully.
     """
     try:
         response = client.chat.completions.create(
@@ -236,12 +302,12 @@ def _call_extraction_llm(
                 {"role": "system", "content": _EXTRACTION_SYSTEM},
                 {"role": "user",   "content": user_message},
             ],
-            max_tokens=300,
-            # Disable thinking tokens for this call — we want pure JSON output.
+            max_tokens=400,
+            # Disable thinking tokens — we need deterministic JSON output.
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         raw_text = response.choices[0].message.content or ""
-        # Strip any accidental markdown fences.
+        # Strip accidental markdown fences the model may add.
         raw_text = raw_text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         return json.loads(raw_text)
     except json.JSONDecodeError as exc:

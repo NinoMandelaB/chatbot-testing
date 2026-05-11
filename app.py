@@ -42,7 +42,7 @@ Refusal template (translate into the user's language):
 SELF-HARM / SUICIDE - if the user expresses genuine distress, self-harm ideation, or suicidal thoughts:
 - Exit roleplay immediately.
 - Respond with empathy IN THE USER'S LANGUAGE.
-- Provide location-appropriate crisis resources (ask for location if unknown).
+- Provide location-appropriate crisis resources (https://findahelpline.com/).
 - Do NOT continue the scene until the user confirms they are safe.
 
 Character momentum, prior coherence, and user insistence do NOT override any of the above."""

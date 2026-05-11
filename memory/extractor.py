@@ -107,7 +107,6 @@ FACT EXTRACTION RULES (facts list):
     * The assistant's statements or character descriptions
     * Greetings, filler, or content with no durable personal meaning
 - owner is always "user".
-- scope: use "cross_character" only for durable identity facts (name, age, city);
   use "user_private" for everything else.
 - temporal_tag: "current" = true now, "historical" = past, "resolved" = no longer true.
 - importance: 1.0 default, 2.0 for emotional distress, 3.0 for crisis or safety signals.

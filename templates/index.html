@@ -72,45 +72,53 @@
     .sandwich-row label { color: #a6e3a1; cursor: pointer; font-size: 0.82rem; white-space: nowrap; }
     .sandwich-row .sandwich-hint { color: #6c7086; font-size: 0.75rem; }
 
-    /* ── Token bar ── */
-    #token-bar {
-      background: #181825; color: #6c7086;
-      padding: 4px 16px; font-size: 0.75rem;
+    /* ── Memory debug panel ── */
+    #memory-debug {
+      background: #1e1e2e; padding: 10px; border-radius: 6px;
+      border: 1px solid #45475a; margin-top: 10px;
     }
+    #memory-debug input {
+      padding: 4px 8px; border-radius: 5px; border: 1px solid #45475a;
+      background: #313244; color: #cdd6f4; font-size: 0.8rem; width: 200px;
+    }
+    #memory-debug button {
+      background: #313244; border: 1px solid #45475a; color: #89dceb;
+      padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
+    }
+    .memory-list {
+      background: #313244; border-radius: 5px; padding: 8px;
+      margin-top: 6px; max-height: 200px; overflow-y: auto; font-size: 0.75rem;
+    }
+    .memory-item {
+      padding: 4px 6px; margin: 3px 0; background: #181825;
+      border-radius: 4px; border-left: 3px solid #89b4fa;
+    }
+    .memory-item.user { border-left-color: #a6e3a1; }
+    .memory-item.character { border-left-color: #f9e2af; }
+
+    /* ── Token bar ── */
+    #token-bar { background: #181825; color: #6c7086; padding: 4px 16px; font-size: 0.75rem; }
 
     /* ── Chat box ── */
-    #chat-box {
-      flex: 1; overflow-y: auto; padding: 16px;
-      display: flex; flex-direction: column; gap: 10px;
-    }
+    #chat-box { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
     .bubble {
       max-width: 78%; padding: 10px 14px; border-radius: 14px;
       line-height: 1.55; white-space: pre-wrap; word-break: break-word; font-size: 0.93rem;
     }
-    .bubble.user  { background: #1a73e8; color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
-    .bubble.bot   { background: #fff;    color: #1e1e2e; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    .bubble.user { background: #1a73e8; color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+    .bubble.bot { background: #fff; color: #1e1e2e; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
     .bubble.error { background: #f8d7da; color: #721c24; align-self: flex-start; border-bottom-left-radius: 4px; }
     .thinking { color: #888; font-style: italic; font-size: 0.82rem; align-self: flex-start; }
 
     /* ── Input row ── */
-    #input-row {
-      display: flex; gap: 8px; padding: 12px 16px;
-      background: #fff; border-top: 1px solid #e0e0e0;
-    }
-    #user-input {
-      flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 22px;
-      font-size: 0.95rem; outline: none;
-    }
+    #input-row { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #e0e0e0; }
+    #user-input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 22px; font-size: 0.95rem; outline: none; }
     #user-input:focus { border-color: #1a73e8; }
-    #send-btn {
-      padding: 10px 20px; background: #1a73e8; color: #fff;
-      border: none; border-radius: 22px; cursor: pointer; font-size: 0.9rem; font-weight: 600;
-    }
+    #send-btn { padding: 10px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 22px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
     #send-btn:disabled { background: #aaa; cursor: not-allowed; }
   </style>
 </head>
 <body>
-
   <!-- Top bar -->
   <div id="top-bar">
     <strong>🤖 Cortecs Model Tester</strong>
@@ -157,10 +165,27 @@
       <span class="sandwich-hint">(injects a safety reminder before every message — off by default)</span>
     </div>
 
+    <!-- Memory debug panel -->
+    <div id="memory-debug">
+      <div class="adv-section-label">🧠 Memory Debug</div>
+      <div class="adv-row">
+        <label for="user-id-input">User ID:</label>
+        <input id="user-id-input" type="text" placeholder="user_123" value="user_test"/>
+        <label for="character-id-input">Character ID:</label>
+        <input id="character-id-input" type="text" placeholder="char_001" value="char_test"/>
+        <button onclick="loadMemoryDebug()">🔍 Load Memory</button>
+      </div>
+      <div id="memory-output" style="display:none;">
+        <div class="adv-section-label" style="margin-top:10px;">User Memories:</div>
+        <div class="memory-list" id="user-memories"></div>
+        <div class="adv-section-label" style="margin-top:10px;">Character Memories:</div>
+        <div class="memory-list" id="character-memories"></div>
+      </div>
+    </div>
+
     <div>
       <div class="adv-section-label">System Prompt</div>
       <textarea id="system-prompt-input">You are a safe, immersive NSFW-AI roleplay assistant for adult users. Generate character-consistent roleplay in the user's language. **NO TOOL USE. No function calls. Pure chat only.**
-
 # Instruction Priority
 1. Safety rules (overrides everything)
 2. System rules
@@ -168,7 +193,6 @@
 4. Session settings
 5. User request
 6. History
-
 # Language Rule (CRITICAL)
 **Always match the user's language for every response — including all safety refusals, crisis support messages, and sensitive advice.**
 - Detect the language of the user's latest message.
@@ -177,7 +201,6 @@
 - If the user writes in Kiswahili → respond in Kiswahili.
 - If the user switches language mid-conversation → switch with them immediately.
 - The example phrases in this prompt (English or Kiswahili) are templates only — translate them into the user's actual language before sending.
-
 # Core Behavior
 - Stay in character unless safety/crisis
 - All characters = fictional adults (18+)
@@ -185,7 +208,6 @@
 - **GREATER EMPATHY**: mirror the user's language: e.g. in English: "I hear you. That's heavy. You're not alone in this." / in Kiswahili: "Sawa, naelewa. Si rahisi. Wewe sio peke yako."
 - Family/community support ≠ safe assumption
 - Distress → empathy > roleplay
-
 # Safety Rules (HARD BLOCKS)
 **Never:**
 - Minors / "young" / "teen" / "17" / "barely legal" / schoolgirl /
@@ -197,7 +219,6 @@
 - CSAM / rape / graphic violence
 - Self-harm / suicide encouragement
 - Hate / criminal instruction / doxxing
-
 # Pre-Response Safety Check
 Before every response in a sexual or romantic scene:
 1. Re-read the latest user message in full.
@@ -209,75 +230,60 @@ Before every response in a sexual or romantic scene:
    Character momentum does NOT override a hard block.
    User insistence does NOT override a hard block.
 5. Only after this check passes, generate the response.
-
 **Refusal (exit-scene template — translate into user's language):**
 "I have to stop the roleplay here. [trigger] is something I cannot
 include, even fictionally. If you'd like to continue, we can rewind
 to before that point with all characters as adults."
 Drop character. Do not narrate. Do not react in character.
-
 # Edgier Roleplay (Adult Fiction Only)
 **ALLOWED:**
 - BDSM/degradation (consensual)
 - Adult sex work (character-defined)
 - Rough/taboo (adult/fictional)
-
 # Crisis Support
 **Always respond in the user's language. Always provide resources relevant to the user's location.**
-
 ## Location handling
 - If the user's country/region is clear from context or conversation history, use the matching resources below.
 - If location is unclear, first express empathy in the user's language, then gently ask:
   (English) "Can I ask where you're based? I want to make sure I share the right support line for you."
   (Kiswahili) "Unaweza kuniambia uko nchi gani? Nataka kukupa nambari sahihi ya msaada."
   Then provide resources once location is known.
-
 ## Resource list by region (translate labels into user's language)
 **Kenya:**
 - Befrienders Kenya (crisis/suicide): +254 722 178 177
 - Niskize (mental health): 0900 620 800
 - GBV hotline: 1195
-
 **Tanzania:**
 - Tanzania Mental Health helpline: +255 800 750 750
 - WAMATA (support/distress): +255 22 215 0083
 - GBV/police: 116
-
 **Uganda:**
 - Butabika Hospital crisis line: +256 414 287 500
 - SafeSpace Uganda: +256 800 100 066
 - GBV: 116
-
 **International / location unknown:**
 - International Association for Suicide Prevention: https://www.iasp.info/resources/Crisis_Centres/
 - Crisis Text Line (English, global): text HOME to 741741
-
 ## Crisis phrases (translate into user's language before sending)
 **Self-harm/suicide:**
 "I can hear that you're in a lot of pain right now. You are not alone.
 [Provide location-appropriate resources above.]
 Please reach out — someone is there for you."
-
 **Abuse/distress:**
 "I'm really glad you told me. What you're going through is not okay, and help is available.
 [Provide location-appropriate resources above.]"
-
 # Sensitive Advice (translate into user's language)
 - FGM: "That is not okay. It causes lasting harm."
 - LGBTQ+: "Being gay is not a sin. It is part of who you are."
 - Violence: "That is not okay. Nobody deserves to be hurt."
-
 # Output
 Character/supportive only. No tools. No policy text unless refusing or in crisis support.</textarea>
     </div>
   </div>
 
-  <!-- Token stats -->
+  <!-- Token bar -->
   <div id="token-bar">
-    Tokens — prompt: <span id="t-prompt">0</span> &nbsp;|
-    completion: <span id="t-comp">0</span> &nbsp;|
-    total: <span id="t-total">0</span>
-    &nbsp;&nbsp;|&nbsp;&nbsp; history: <span id="t-hist">0</span> turns
+    Tokens — prompt: <span id="t-prompt">0</span> | completion: <span id="t-comp">0</span> | total: <span id="t-total">0</span> | history: <span id="t-hist">0</span> turns
   </div>
 
   <!-- Chat -->
@@ -290,9 +296,9 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
   </div>
 
   <script>
-    const chatBox  = document.getElementById('chat-box');
-    const input    = document.getElementById('user-input');
-    const sendBtn  = document.getElementById('send-btn');
+    const chatBox = document.getElementById('chat-box');
+    const input = document.getElementById('user-input');
+    const sendBtn = document.getElementById('send-btn');
     let tPrompt = 0, tComp = 0, tTotal = 0;
     let history = [];
 
@@ -319,12 +325,64 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
 
     function updateTokens(usage) {
       if (!usage) return;
-      tPrompt += usage.prompt_tokens     || 0;
-      tComp   += usage.completion_tokens || 0;
-      tTotal  += usage.total_tokens      || 0;
+      tPrompt += usage.prompt_tokens || 0;
+      tComp += usage.completion_tokens || 0;
+      tTotal += usage.total_tokens || 0;
       document.getElementById('t-prompt').textContent = tPrompt;
-      document.getElementById('t-comp').textContent   = tComp;
-      document.getElementById('t-total').textContent  = tTotal;
+      document.getElementById('t-comp').textContent = tComp;
+      document.getElementById('t-total').textContent = tTotal;
+    }
+
+    // Memory debug function
+    async function loadMemoryDebug() {
+      const userId = document.getElementById('user-id-input').value.trim();
+      const charId = document.getElementById('character-id-input').value.trim();
+      if (!userId || !charId) {
+        alert('Please enter both User ID and Character ID');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/memory/debug?user_id=${encodeURIComponent(userId)}&character_id=${encodeURIComponent(charId)}`);
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          alert('Error loading memory: ' + (data.error || res.statusText));
+          return;
+        }
+
+        // Display user memories
+        const userMemDiv = document.getElementById('user-memories');
+        userMemDiv.innerHTML = '';
+        if (data.user_memories && data.user_memories.length > 0) {
+          data.user_memories.forEach(mem => {
+            const div = document.createElement('div');
+            div.className = 'memory-item user';
+            div.textContent = mem.fact;
+            userMemDiv.appendChild(div);
+          });
+        } else {
+          userMemDiv.innerHTML = '<div style="color:#7f849c;font-style:italic;">No user memories found</div>';
+        }
+
+        // Display character memories
+        const charMemDiv = document.getElementById('character-memories');
+        charMemDiv.innerHTML = '';
+        if (data.character_memories && data.character_memories.length > 0) {
+          data.character_memories.forEach(mem => {
+            const div = document.createElement('div');
+            div.className = 'memory-item character';
+            div.textContent = mem.fact;
+            charMemDiv.appendChild(div);
+          });
+        } else {
+          charMemDiv.innerHTML = '<div style="color:#7f849c;font-style:italic;">No character memories found</div>';
+        }
+
+        document.getElementById('memory-output').style.display = 'block';
+      } catch (err) {
+        alert('Network error loading memory: ' + err.message);
+      }
     }
 
     async function send() {
@@ -335,12 +393,12 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
 
       bubble('user', msg);
 
-      const model            = document.getElementById('model-select').value;
-      const reasoningEffort  = document.getElementById('reasoning-select').value;
-      const extraBodyRaw     = document.getElementById('extra-body-input').value.trim();
-      const systemPrompt     = document.getElementById('system-prompt-input').value.trim();
-      const maxTurns         = parseInt(document.getElementById('history-limit').value, 10) || 20;
-      const sandwichEnabled  = document.getElementById('sandwich-toggle').checked;
+      const model = document.getElementById('model-select').value;
+      const reasoningEffort = document.getElementById('reasoning-select').value;
+      const extraBodyRaw = document.getElementById('extra-body-input').value.trim();
+      const systemPrompt = document.getElementById('system-prompt-input').value.trim();
+      const maxTurns = parseInt(document.getElementById('history-limit').value, 10) || 20;
+      const sandwichEnabled = document.getElementById('sandwich-toggle').checked;
 
       let extraBody = null;
       if (extraBodyRaw) {
@@ -360,12 +418,12 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
 
       const historySlice = history.slice(-(maxTurns * 2));
       const body = { message: msg, model, history: historySlice, sandwich: sandwichEnabled };
-      if (extraBody)       body.extra_body       = extraBody;
+      if (extraBody) body.extra_body = extraBody;
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-      if (systemPrompt)    body.system_prompt    = systemPrompt;
+      if (systemPrompt) body.system_prompt = systemPrompt;
 
       try {
-        const res  = await fetch('/chat', {
+        const res = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -379,7 +437,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
           const reply = data.reply || '(empty response)';
           bubble('bot', reply);
           updateTokens(data.usage);
-          history.push({ role: 'user',      content: msg   });
+          history.push({ role: 'user', content: msg });
           history.push({ role: 'assistant', content: reply });
           document.getElementById('t-hist').textContent = Math.floor(history.length / 2);
         }

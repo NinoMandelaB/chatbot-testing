@@ -239,3 +239,60 @@ def fetch_facts_for_debug(
             LIMIT %s
         """, params)
         return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Conversation summaries  (hybrid memory — schema_v3.sql)
+# ---------------------------------------------------------------------------
+
+def upsert_summary(
+    user_id: str,
+    character_id: str,
+    summary_text: str,
+    turn_count: int,
+) -> None:
+    """
+    Atomically replace the active summary for a (user_id, character_id) pair.
+
+    Steps:
+      1. Mark any existing active summary as inactive (audit trail).
+      2. Insert the new summary as the single active record.
+    """
+    with cursor() as cur:
+        # Deactivate the previous active summary (if any).
+        cur.execute("""
+            UPDATE conversation_summaries
+            SET    is_active = FALSE
+            WHERE  user_id      = %s
+              AND  character_id = %s
+              AND  is_active    = TRUE
+        """, (user_id, character_id))
+
+        # Insert the fresh summary.
+        cur.execute("""
+            INSERT INTO conversation_summaries
+                (user_id, character_id, summary_text, turn_count, is_active)
+            VALUES (%s, %s, %s, %s, TRUE)
+        """, (user_id, character_id, summary_text, turn_count))
+
+
+def fetch_summary(
+    user_id: str,
+    character_id: str,
+) -> Optional[str]:
+    """
+    Return the active conversation summary text for a session, or None.
+    Called by memory/retriever.py to prepend long-term context.
+    """
+    with cursor() as cur:
+        cur.execute("""
+            SELECT summary_text
+            FROM   conversation_summaries
+            WHERE  user_id      = %s
+              AND  character_id = %s
+              AND  is_active    = TRUE
+            ORDER  BY created_at DESC
+            LIMIT  1
+        """, (user_id, character_id))
+        row = cur.fetchone()
+    return row["summary_text"] if row else None

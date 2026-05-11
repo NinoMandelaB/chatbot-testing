@@ -291,3 +291,32 @@ def fetch_summary_turn_count(
         """, (user_id, character_id))
         row = cur.fetchone()
         return int(row["turn_count"]) if row else 0
+
+
+
+def increment_and_get_turn_count(
+    user_id: str,
+    character_id: str,
+) -> int:
+    """
+    Atomically increment the session turn counter and return the new value.
+
+    Uses the memory_sessions table (created by schema_v4.sql).  The row is
+    created on first call (turn_count = 1) and incremented on every
+    subsequent call.  The returned value is the CURRENT turn number after
+    the increment, which the summariser uses to decide whether to fire.
+
+    This is the authoritative turn counter for summarisation.  It is
+    completely independent of the history slice the frontend sends.
+    """
+    with cursor() as cur:
+        cur.execute("""
+            INSERT INTO memory_sessions (user_id, character_id, turn_count)
+            VALUES (%s, %s, 1)
+            ON CONFLICT (user_id, character_id) DO UPDATE
+                SET turn_count = memory_sessions.turn_count + 1,
+                    updated_at = NOW()
+            RETURNING turn_count
+        """, (user_id, character_id))
+        row = cur.fetchone()
+        return int(row["turn_count"]) if row else 1

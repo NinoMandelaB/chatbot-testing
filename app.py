@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 
 from memory import db as memory_db
+from memory import summariser as memory_summariser
 
 app = Flask(__name__)
 
@@ -74,14 +75,14 @@ def chat():
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
-    model             = data.get("model", "qwen3.5-9b")
-    extra_body_raw    = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
-    reasoning_effort  = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
-    system_prompt     = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-    history           = data.get("history", [])
-    sandwich_on       = bool(data.get("sandwich", False))  # OFF by default
+    model            = data.get("model", "qwen3.5-9b")
+    extra_body_raw   = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
+    reasoning_effort = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
+    system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    history          = data.get("history", [])
+    sandwich_on      = bool(data.get("sandwich", False))  # OFF by default
 
-    # Optional session context (used for memory retrieval, not required)
+    # Optional session context (used for memory retrieval and summarisation).
     user_id      = (data.get("user_id") or "").strip() or None
     character_id = (data.get("character_id") or "").strip() or None
 
@@ -89,15 +90,13 @@ def chat():
         extra_body_raw = dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {}
         extra_body_raw["reasoning_effort"] = reasoning_effort
 
-    # Build message array
+    # Build message array.
     messages = [{"role": "system", "content": system_prompt}] + list(history)
-
     if sandwich_on:
         messages += [
             {"role": "user",      "content": SAFETY_REMINDER},
             {"role": "assistant", "content": SAFETY_ACK},
         ]
-
     messages.append({"role": "user", "content": user_message})
 
     try:
@@ -105,11 +104,29 @@ def chat():
         kwargs = dict(model=model, messages=messages, max_tokens=2048, stream=False)
         if extra_body_raw:
             kwargs["extra_body"] = extra_body_raw
+
         response = client.chat.completions.create(**kwargs)
         reply = extract_reply(response.choices[0]) if response.choices else ""
         if not reply:
             reply = "Model returned an empty response."
         usage = response.usage
+
+        # --- Hybrid memory: trigger a conversation summary in the background ---
+        # Appends the new assistant turn to history before passing it to the
+        # summariser so the summary always covers the completed exchange.
+        if user_id and character_id:
+            full_history = list(history) + [
+                {"role": "user",      "content": user_message},
+                {"role": "assistant", "content": reply},
+            ]
+            memory_summariser.maybe_summarise(
+                user_id=user_id,
+                character_id=character_id,
+                history=full_history,
+                api_key=CORTECS_API_KEY,
+                base_url=CORTECS_BASE_URL,
+            )
+
         return jsonify({
             "reply": reply,
             "usage": {
@@ -117,12 +134,13 @@ def chat():
                 "completion_tokens": getattr(usage, "completion_tokens", None),
                 "total_tokens":      getattr(usage, "total_tokens",      None),
             },
-            # Echo back active session so frontend can confirm
+            # Echo back active session so the frontend can confirm.
             "session": {
                 "user_id":      user_id,
                 "character_id": character_id,
             },
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -136,7 +154,7 @@ def memory_debug():
     Filter behaviour (mirrors memory/db.py fetch_facts_for_debug):
       - no params        -> full table
       - user_id only     -> all facts for that user
-      - character_id only -> all facts for that character across all users
+      - character_id only-> all facts for that character across all users
       - both             -> facts matching both
     """
     user_id      = (request.args.get("user_id")      or "").strip() or None
@@ -151,19 +169,16 @@ def memory_debug():
     except Exception as e:
         return jsonify({"error": f"Database error: {e}"}), 500
 
-    # Split rows into the three display buckets the frontend expects
+    # Split rows into the three display buckets the frontend expects.
     user_memories      = [r for r in rows if r.get("scope") == "user_private"]
     character_memories = [r for r in rows if r.get("scope") == "cross_character"]
     safety_memories    = [r for r in rows if r.get("scope") == "safety_global"]
 
-    # Serialise datetime objects so jsonify does not choke
+    # Serialise datetime objects so jsonify does not choke.
     def serialise(record):
         out = {}
         for k, v in record.items():
-            if hasattr(v, "isoformat"):
-                out[k] = v.isoformat()
-            else:
-                out[k] = v
+            out[k] = v.isoformat() if hasattr(v, "isoformat") else v
         return out
 
     return jsonify({

@@ -412,6 +412,11 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       history = [];
       chatBox.innerHTML = '';
       document.getElementById('t-hist').textContent = '0';
+          // Reset token counters so the display matches the fresh conversation.
+    tPrompt = 0; tComp = 0; tTotal = 0;
+    document.getElementById('t-prompt').textContent = '0';
+    document.getElementById('t-comp').textContent = '0';
+    document.getElementById('t-total').textContent = '0';
     }
 
     function bubble(role, text) {

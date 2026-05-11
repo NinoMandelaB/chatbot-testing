@@ -6,6 +6,7 @@ from openai import OpenAI
 from memory import db as memory_db
 from memory import summariser as memory_summariser
 from memory import retriever as memory_retriever
+from memory import extractor as memory_extractor
 
 app = Flask(__name__)
 
@@ -86,13 +87,19 @@ def index():
 def chat():
     """Main chat endpoint.
 
-    Prompt order (matches the hint shown in the UI):
-      1. System prompt
-      2. Character card  (appended to system content if provided)
-      3. Memory block    (injected as a system turn, when memory is enabled)
-      4. Conversation history
-      5. Safety sandwich (when enabled)
-      6. User message
+    Per-turn memory pipeline (executed in this order):
+      1. retriever.build_memory_block()  -- inject facts + summary BEFORE the LLM call
+      2. LLM call
+      3. extractor.extract_and_store()   -- learn new facts from the user message AFTER reply
+      4. db.touch_last_used()            -- mark injected facts as recently used
+      5. summariser.maybe_summarise()    -- conditionally update the long-term summary
+
+    Prompt order sent to the LLM (matches the hint shown in the UI):
+      1. System prompt  (+ character card appended if provided)
+      2. Memory block   (injected as a system turn when a session is active)
+      3. Conversation history
+      4. Safety sandwich (when enabled)
+      5. User message
     """
     if not CORTECS_API_KEY:
         return jsonify({"error": "CORTECS_API_KEY env var not set"}), 500
@@ -115,8 +122,8 @@ def chat():
     history        = data.get("history", [])
     sandwich_on    = bool(data.get("sandwich", False))
 
-    # --- Session context (used for memory retrieval and summarisation) ---
-    user_id      = (data.get("user_id") or "").strip() or None
+    # --- Session context (used for memory retrieval, extraction, and summarisation) ---
+    user_id      = (data.get("user_id")      or "").strip() or None
     character_id = (data.get("character_id") or "").strip() or None
 
     # Append reasoning_effort to extra_body when specified.
@@ -134,13 +141,13 @@ def chat():
         system_content += "\n\n" + character_card
 
     # -----------------------------------------------------------------------
-    # Build the message array
+    # Step 1 — Hybrid memory retrieval (BEFORE the LLM call)
+    # Build the [MEMORY] block from stored facts + active conversation summary.
+    # Runs only when a session is active (user_id is required at minimum).
     # -----------------------------------------------------------------------
     messages = [{"role": "system", "content": system_content}]
+    used_fact_ids: list = []
 
-    # Hybrid memory block: inject retrieved facts + conversation summary as a
-    # dedicated system message so the LLM cannot confuse memory with chat.
-    # Only runs when a session is active (user_id is required at minimum).
     if user_id:
         memory_block, used_fact_ids = memory_retriever.build_memory_block(
             user_message=user_message,
@@ -148,18 +155,14 @@ def chat():
             character_id=character_id,
         )
         if memory_block:
+            # Inject as a dedicated system turn so the LLM cannot confuse
+            # memory content with real conversation messages.
             messages.append({"role": "system", "content": memory_block})
-            # Update last_used_at timestamps so decay scoring stays accurate.
-            if used_fact_ids:
-                try:
-                    memory_db.touch_last_used(used_fact_ids)
-                except Exception:
-                    pass  # non-fatal
 
     # Conversation history
     messages += list(history)
 
-    # Safety sandwich (optional; injected before the user turn)
+    # Safety sandwich (optional; injected immediately before the user turn)
     if sandwich_on:
         messages += [
             {"role": "user",      "content": SAFETY_REMINDER},
@@ -169,7 +172,7 @@ def chat():
     messages.append({"role": "user", "content": user_message})
 
     # -----------------------------------------------------------------------
-    # Call the LLM
+    # Step 2 — LLM call
     # -----------------------------------------------------------------------
     try:
         client = OpenAI(api_key=CORTECS_API_KEY, base_url=CORTECS_BASE_URL)
@@ -190,25 +193,53 @@ def chat():
         usage = response.usage
 
         # -------------------------------------------------------------------
-        # Hybrid memory: trigger conversation summarisation in the background.
-        # The completed exchange (including the new assistant turn) is passed
-        # to the summariser so the summary always covers the full turn.
-        # The same model the user selected for chat is forwarded so
-        # summarisation stays in sync with the UI model selection.
+        # Steps 3-5 — Post-reply memory updates (only when session is active)
+        # All three are fire-and-forget: errors are logged, never re-raised.
         # -------------------------------------------------------------------
-        if user_id and character_id:
-            full_history = list(history) + [
-                {"role": "user",      "content": user_message},
-                {"role": "assistant", "content": reply},
-            ]
-            memory_summariser.maybe_summarise(
-                user_id=user_id,
-                character_id=character_id,
-                history=full_history,
-                api_key=CORTECS_API_KEY,
-                base_url=CORTECS_BASE_URL,
-                model=model,
-            )
+        if user_id:
+            # Step 3 — Extract and store facts from the user's message.
+            # We pass the LLM client and model so the extractor can use the
+            # same API endpoint already configured for this request.
+            try:
+                memory_extractor.extract_and_store(
+                    user_message=user_message,
+                    user_id=user_id,
+                    character_id=character_id,
+                    conversation_id=None,  # no per-conversation ID in this app
+                    llm_client=client,
+                    model=model,
+                )
+            except Exception:
+                pass  # non-fatal
+
+            # Step 4 — Mark injected facts as recently used so decay scoring
+            # stays accurate. Done after a successful reply only.
+            if used_fact_ids:
+                try:
+                    memory_db.touch_last_used(used_fact_ids)
+                except Exception:
+                    pass  # non-fatal
+
+            # Step 5 — Conditionally update the long-term conversation summary.
+            # Both user_id and character_id are required for summaries.
+            # The same model the user selected is forwarded so summarisation
+            # stays in sync with the active UI model selection.
+            if character_id:
+                full_history = list(history) + [
+                    {"role": "user",      "content": user_message},
+                    {"role": "assistant", "content": reply},
+                ]
+                try:
+                    memory_summariser.maybe_summarise(
+                        user_id=user_id,
+                        character_id=character_id,
+                        history=full_history,
+                        api_key=CORTECS_API_KEY,
+                        base_url=CORTECS_BASE_URL,
+                        model=model,
+                    )
+                except Exception:
+                    pass  # non-fatal
 
         return jsonify({
             "reply": reply,
@@ -217,7 +248,7 @@ def chat():
                 "completion_tokens": getattr(usage, "completion_tokens", None),
                 "total_tokens":      getattr(usage, "total_tokens",      None),
             },
-            # Echo back active session so the frontend can confirm.
+            # Echo back the active session so the frontend can confirm it.
             "session": {
                 "user_id":      user_id,
                 "character_id": character_id,
@@ -233,10 +264,10 @@ def memory_debug():
     """Return memory facts filtered by user_id and/or character_id.
 
     Filter behaviour:
-      - no params        -> full table (up to 200 rows)
-      - user_id only     -> all facts for that user
-      - character_id only-> all facts for that character across all users
-      - both             -> facts matching both
+      - no params         -> full table (up to 200 rows)
+      - user_id only      -> all facts for that user
+      - character_id only -> all facts for that character across all users
+      - both provided     -> facts matching both user AND character
     """
     user_id      = (request.args.get("user_id")      or "").strip() or None
     character_id = (request.args.get("character_id") or "").strip() or None

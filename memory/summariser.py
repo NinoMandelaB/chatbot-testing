@@ -17,14 +17,14 @@ or the API key is not configured.
 
 Turn counting
 -------------
-Each call to maybe_summarise() represents exactly ONE new user turn — because
-/chat is called once per user message.  The trigger therefore counts:
+app.py calls memory_db.increment_and_get_turn_count(user_id, character_id)
+BEFORE calling maybe_summarise(), and passes the resulting cumulative turn
+number as `turn_count`.  A summary is generated whenever:
 
-  new_total = prior_turn_count + 1
+    turn_count % SUMMARISE_EVERY == 0
 
-and fires whenever new_total is a multiple of SUMMARISE_EVERY.  The frontend
-"history turns" setting only controls how many messages are sent for prompt
-length; it has NO effect on whether summarisation triggers.
+Because the counter is incremented atomically in the DB on every /chat call,
+it is completely independent of the history slice the frontend sends.
 
 Model selection
 ---------------
@@ -42,8 +42,8 @@ from memory import db
 
 log = logging.getLogger(__name__)
 
-# How many user turns must accumulate (since the last summary) before a new
-# summary is generated.  Each /chat call = exactly one turn.
+# How many user turns must accumulate before a new summary is generated.
+# Configurable via the SUMMARISE_EVERY env var (default: 6).
 SUMMARISE_EVERY: int = int(os.environ.get("SUMMARISE_EVERY", "6"))
 
 # Fallback model when no model is passed in and the env var is not set.
@@ -67,33 +67,25 @@ def maybe_summarise(
   api_key: str,
   base_url: str,
   model: Optional[str] = None,
-  prior_turn_count: int = 0,
+  turn_count: int = 0,
 ) -> None:
   """
-  Trigger a summary update if enough turns have accumulated.
+  Trigger a summary update if the current turn number is a multiple of
+  SUMMARISE_EVERY.
 
   Parameters
   ----------
-  user_id        : identifies the end user.
-  character_id   : identifies the AI character / persona.
-  history        : list of {role, content} dicts — used ONLY to build the
-                   summary text.  Its length has no effect on the trigger.
-  api_key        : Cortecs API key.
-  base_url       : Cortecs base URL.
-  model          : LLM model name to use for summarisation.
-  prior_turn_count : cumulative user-turn count stored in the last summary
-                     row (0 if no summary exists yet).  Fetched from DB by
-                     app.py before calling this function.
-
-  Trigger logic
-  -------------
-  Each call to this function represents exactly ONE new user turn.
-  A new summary is generated whenever:
-
-      (prior_turn_count + 1) % SUMMARISE_EVERY == 0
-
-  This is completely independent of how many messages the frontend chose
-  to include in the history slice.
+  user_id      : identifies the end user.
+  character_id : identifies the AI character / persona.
+  history      : list of {role, content} dicts -- used ONLY to build the
+                 summary text.  Its length has NO effect on the trigger.
+  api_key      : Cortecs API key.
+  base_url     : Cortecs base URL.
+  model        : LLM model name to use for summarisation.
+  turn_count   : the CURRENT cumulative turn number for this session,
+                 already incremented by app.py via
+                 memory_db.increment_and_get_turn_count() before this call.
+                 A summary fires when turn_count % SUMMARISE_EVERY == 0.
   """
   # Skip if DB or API are not configured.
   if not os.environ.get("DATABASE_URL") or not api_key:
@@ -103,12 +95,9 @@ def maybe_summarise(
   if not user_id or not character_id:
     return
 
-  # Each /chat call = exactly one new user turn.  Do NOT count from the
-  # history slice — the slice size is controlled by the frontend UI and
-  # must not affect when summarisation fires.
-  new_total = prior_turn_count + 1
-
-  if new_total % SUMMARISE_EVERY != 0:
+  # Fire when the cumulative turn count hits an exact multiple of the interval.
+  # turn_count is already the post-increment value from increment_and_get_turn_count.
+  if turn_count == 0 or turn_count % SUMMARISE_EVERY != 0:
     return
 
   # Resolve the model: caller > env var > hardcoded default.
@@ -126,7 +115,7 @@ def maybe_summarise(
       api_key,
       base_url,
       resolved_model,
-      new_total,
+      turn_count,
     )
   except Exception as exc:
     log.error("summariser.maybe_summarise failed: %s", exc)

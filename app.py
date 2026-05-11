@@ -114,6 +114,8 @@ def chat():
         # --- Hybrid memory: trigger a conversation summary in the background ---
         # Appends the new assistant turn to history before passing it to the
         # summariser so the summary always covers the completed exchange.
+        # The same `model` selected for chat is forwarded so summarisation stays
+        # in sync with the user's active model choice.
         if user_id and character_id:
             full_history = list(history) + [
                 {"role": "user",      "content": user_message},
@@ -125,6 +127,7 @@ def chat():
                 history=full_history,
                 api_key=CORTECS_API_KEY,
                 base_url=CORTECS_BASE_URL,
+                model=model,  # mirrors the model the user selected in the UI
             )
 
         return jsonify({
@@ -152,10 +155,10 @@ def memory_debug():
     If neither is provided, returns the full table (up to 200 rows).
 
     Filter behaviour (mirrors memory/db.py fetch_facts_for_debug):
-      - no params        -> full table
-      - user_id only     -> all facts for that user
-      - character_id only-> all facts for that character across all users
-      - both             -> facts matching both
+      - no params         -> full table
+      - user_id only      -> all facts for that user
+      - character_id only -> all facts for that character across all users
+      - both              -> facts matching both
     """
     user_id      = (request.args.get("user_id")      or "").strip() or None
     character_id = (request.args.get("character_id") or "").strip() or None

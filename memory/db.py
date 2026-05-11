@@ -7,7 +7,6 @@ psycopg2 directly — it calls functions from this module only.
 Connection is created once per process from the DATABASE_URL env var
 (standard Railway Postgres URL format).
 """
-
 import os
 import logging
 from contextlib import contextmanager
@@ -61,9 +60,9 @@ def cursor():
 def insert_fact(
     user_id: str,
     fact_text: str,
-    fact_owner: str,          # 'user' | 'character' | 'system'
-    scope: str,               # 'user_private' | 'cross_character' | 'safety_global'
-    temporal_tag: str,        # 'current' | 'historical' | 'resolved'
+    fact_owner: str,       # 'user' | 'character' | 'system'
+    scope: str,            # 'user_private' | 'cross_character' | 'safety_global'
+    temporal_tag: str,     # 'current' | 'historical' | 'resolved'
     character_id: Optional[str] = None,
     confidence_score: float = 1.0,
     importance_score: float = 1.0,
@@ -71,11 +70,11 @@ def insert_fact(
     trigger_tags: Optional[list] = None,
     conversation_id: Optional[str] = None,
     source_message_id: Optional[str] = None,
-    embedding: Optional[list] = None,  # 384-dim float list
+    embedding: Optional[list] = None,   # 384-dim float list
 ) -> int:
     """Insert a new memory fact and return its memory_fact_id."""
     tags = trigger_tags or []
-    now  = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     with cursor() as cur:
         cur.execute("""
             INSERT INTO memory_facts (
@@ -96,7 +95,7 @@ def insert_fact(
             embedding, now,
         ))
         row = cur.fetchone()
-    return row["memory_fact_id"]
+        return row["memory_fact_id"]
 
 
 def resolve_facts_by_keyword(user_id: str, keyword: str) -> int:
@@ -108,14 +107,14 @@ def resolve_facts_by_keyword(user_id: str, keyword: str) -> int:
     with cursor() as cur:
         cur.execute("""
             UPDATE memory_facts
-            SET temporal_tag    = 'resolved',
-                resolved_at     = NOW(),
+            SET temporal_tag = 'resolved',
+                resolved_at  = NOW(),
                 confidence_score = 0.05
             WHERE user_id = %s
-              AND fact_text   ILIKE %s
-              AND scope       != 'safety_global'
+              AND fact_text ILIKE %s
+              AND scope != 'safety_global'
               AND temporal_tag != 'resolved'
-              AND is_active   = TRUE
+              AND is_active = TRUE
         """, (user_id, f"%{keyword}%"))
         return cur.rowcount
 
@@ -145,8 +144,8 @@ def fetch_safety_flags(user_id: str) -> list[dict]:
         cur.execute("""
             SELECT memory_fact_id, trigger_tags, fact_text, created_at
             FROM memory_facts
-            WHERE user_id  = %s
-              AND scope     = 'safety_global'
+            WHERE user_id = %s
+              AND scope = 'safety_global'
               AND is_active = TRUE
             ORDER BY importance_score DESC
             LIMIT 10
@@ -166,16 +165,17 @@ def fetch_candidate_facts(
     filters = "AND temporal_tag != 'resolved'" if exclude_resolved else ""
     with cursor() as cur:
         cur.execute(f"""
-            SELECT memory_fact_id, fact_text, fact_owner, scope,
-                   temporal_tag, as_of, confidence_score, importance_score,
-                   decay_rate, trigger_tags, embedding
+            SELECT
+                memory_fact_id, fact_text, fact_owner, scope, temporal_tag,
+                as_of, confidence_score, importance_score, decay_rate,
+                trigger_tags, embedding
             FROM memory_facts
-            WHERE user_id  = %s
-              AND scope     != 'safety_global'
+            WHERE user_id = %s
+              AND scope != 'safety_global'
               AND is_active = TRUE
               AND (
-                  (scope = 'user_private' AND character_id = %s)
-                  OR scope = 'cross_character'
+                    (scope = 'user_private' AND character_id = %s)
+                    OR scope = 'cross_character'
               )
               {filters}
             ORDER BY importance_score DESC, confidence_score DESC
@@ -191,32 +191,28 @@ def fetch_facts_for_debug(
 ) -> list[dict]:
     """
     Flexible debug query used by the /memory/debug API endpoint.
-
     Filter behaviour:
-      - both None         -> full table (up to `limit` rows)
-      - user_id only      -> all facts for that user
+      - both None       -> full table (up to `limit` rows)
+      - user_id only    -> all facts for that user
       - character_id only -> all facts for that character across all users
-      - both provided     -> facts matching both user AND character
+      - both provided   -> facts matching both user AND character
     """
     conditions = ["is_active = TRUE"]
     params: list = []
-
     if user_id:
         conditions.append("user_id = %s")
         params.append(user_id)
     if character_id:
         conditions.append("character_id = %s")
         params.append(character_id)
-
     where_clause = " AND ".join(conditions)
     params.append(limit)
-
     with cursor() as cur:
         cur.execute(f"""
-            SELECT memory_fact_id, user_id, character_id,
-                   fact_text, fact_owner, scope,
-                   temporal_tag, as_of, confidence_score, importance_score,
-                   trigger_tags, is_active, created_at
+            SELECT
+                memory_fact_id, user_id, character_id, fact_text, fact_owner,
+                scope, temporal_tag, as_of, confidence_score, importance_score,
+                trigger_tags, is_active, created_at
             FROM memory_facts
             WHERE {where_clause}
             ORDER BY created_at DESC
@@ -237,19 +233,18 @@ def upsert_summary(
 ) -> None:
     """
     Atomically replace the active summary for a (user_id, character_id) pair.
-
     Steps:
       1. Mark any existing active summary as inactive (keeps an audit trail).
       2. Insert the new summary as the single active record.
+    The turn_count stored here is the CUMULATIVE total of user turns seen
+    across all sessions — not just the current frontend history slice.
     """
     with cursor() as cur:
         # Deactivate the previous active summary (if any).
         cur.execute("""
             UPDATE conversation_summaries
             SET is_active = FALSE
-            WHERE user_id      = %s
-              AND character_id = %s
-              AND is_active    = TRUE
+            WHERE user_id = %s AND character_id = %s AND is_active = TRUE
         """, (user_id, character_id))
         # Insert the fresh summary.
         cur.execute("""
@@ -269,13 +264,30 @@ def fetch_summary(
     """
     with cursor() as cur:
         cur.execute("""
-            SELECT summary_text
-            FROM conversation_summaries
-            WHERE user_id      = %s
-              AND character_id = %s
-              AND is_active    = TRUE
-            ORDER BY created_at DESC
-            LIMIT 1
+            SELECT summary_text FROM conversation_summaries
+            WHERE user_id = %s AND character_id = %s AND is_active = TRUE
+            ORDER BY created_at DESC LIMIT 1
         """, (user_id, character_id))
         row = cur.fetchone()
-    return row["summary_text"] if row else None
+        return row["summary_text"] if row else None
+
+
+def fetch_summary_turn_count(
+    user_id: str,
+    character_id: str,
+) -> int:
+    """
+    Return the cumulative turn_count stored in the active summary row.
+    Used by memory/summariser.py to correctly compute when to trigger the
+    next summary, regardless of how many messages the frontend is currently
+    sending in its history slice.
+    Returns 0 when no summary exists yet.
+    """
+    with cursor() as cur:
+        cur.execute("""
+            SELECT turn_count FROM conversation_summaries
+            WHERE user_id = %s AND character_id = %s AND is_active = TRUE
+            ORDER BY created_at DESC LIMIT 1
+        """, (user_id, character_id))
+        row = cur.fetchone()
+        return int(row["turn_count"]) if row else 0

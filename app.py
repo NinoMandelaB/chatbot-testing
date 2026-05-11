@@ -227,11 +227,16 @@ def chat():
             # summary.  Both user_id and character_id are required.
             # The same model the user selected is forwarded so summarisation
             # stays in sync with the active UI model selection.
-            if character_id:
+            if user_id and character_id:
                 full_history = list(history) + [
                     {"role": "user",      "content": user_message},
                     {"role": "assistant", "content": reply},
                 ]
+                # Fetch the cumulative turn count stored by the last summary so the
+                # trigger logic works independently of the frontend history slice.
+                prior_turn_count = memory_db.fetch_summary_turn_count(
+                    user_id, character_id
+                )
                 try:
                     memory_summariser.maybe_summarise(
                         user_id=user_id,
@@ -240,6 +245,7 @@ def chat():
                         api_key=CORTECS_API_KEY,
                         base_url=CORTECS_BASE_URL,
                         model=model,
+                                        prior_turn_count=prior_turn_count,
                     )
                 except Exception as exc:
                     log.warning("chat: maybe_summarise failed: %s", exc)

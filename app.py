@@ -3,6 +3,8 @@ import re
 from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 
+from memory import db as memory_db
+
 app = Flask(__name__)
 
 CORTECS_API_KEY  = os.environ.get("CORTECS_API_KEY", "")
@@ -72,12 +74,12 @@ def chat():
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
-    model            = data.get("model", "qwen3.5-9b")
-    extra_body_raw   = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
-    reasoning_effort = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
-    system_prompt    = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-    history          = data.get("history", [])
-    sandwich_on      = bool(data.get("sandwich", False))  # OFF by default
+    model             = data.get("model", "qwen3.5-9b")
+    extra_body_raw    = data.get("extra_body", {"chat_template_kwargs": {"enable_thinking": False}})
+    reasoning_effort  = data.get("reasoning_effort")  # "low" | "medium" | "high" | None
+    system_prompt     = data.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    history           = data.get("history", [])
+    sandwich_on       = bool(data.get("sandwich", False))  # OFF by default
 
     # Optional session context (used for memory retrieval, not required)
     user_id      = (data.get("user_id") or "").strip() or None
@@ -103,19 +105,17 @@ def chat():
         kwargs = dict(model=model, messages=messages, max_tokens=2048, stream=False)
         if extra_body_raw:
             kwargs["extra_body"] = extra_body_raw
-
         response = client.chat.completions.create(**kwargs)
         reply = extract_reply(response.choices[0]) if response.choices else ""
         if not reply:
             reply = "Model returned an empty response."
-
         usage = response.usage
         return jsonify({
             "reply": reply,
             "usage": {
-                "prompt_tokens":     getattr(usage, "prompt_tokens", None),
+                "prompt_tokens":     getattr(usage, "prompt_tokens",     None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens":      getattr(usage, "total_tokens", None),
+                "total_tokens":      getattr(usage, "total_tokens",      None),
             },
             # Echo back active session so frontend can confirm
             "session": {
@@ -132,31 +132,49 @@ def memory_debug():
     """
     Return memory facts filtered by user_id and/or character_id.
     If neither is provided, returns the full table (up to 200 rows).
+
+    Filter behaviour (mirrors memory/db.py fetch_facts_for_debug):
+      - no params        -> full table
+      - user_id only     -> all facts for that user
+      - character_id only -> all facts for that character across all users
+      - both             -> facts matching both
     """
-    user_id      = (request.args.get("user_id") or "").strip() or None
+    user_id      = (request.args.get("user_id")      or "").strip() or None
     character_id = (request.args.get("character_id") or "").strip() or None
 
-    # ----------------------------------------------------------------
-    # TODO: replace this stub with your real ORM / DB query.
-    # Example (SQLAlchemy / Django ORM style):
-    #
-    #   qs = MemoryFact.objects.all().order_by("-created_at")
-    #   if user_id:      qs = qs.filter(user_id=user_id)
-    #   if character_id: qs = qs.filter(character_id=character_id)
-    #   facts = list(qs[:200])
-    #
-    # For now we return an empty scaffold so the UI renders correctly.
-    # ----------------------------------------------------------------
+    try:
+        rows = memory_db.fetch_facts_for_debug(
+            user_id=user_id,
+            character_id=character_id,
+            limit=200,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Database error: {e}"}), 500
 
-    # Stub response — three scoped buckets
+    # Split rows into the three display buckets the frontend expects
+    user_memories      = [r for r in rows if r.get("scope") == "user_private"]
+    character_memories = [r for r in rows if r.get("scope") == "cross_character"]
+    safety_memories    = [r for r in rows if r.get("scope") == "safety_global"]
+
+    # Serialise datetime objects so jsonify does not choke
+    def serialise(record):
+        out = {}
+        for k, v in record.items():
+            if hasattr(v, "isoformat"):
+                out[k] = v.isoformat()
+            else:
+                out[k] = v
+        return out
+
     return jsonify({
-        "user_memories":      [],   # scope = user_private
-        "character_memories": [],   # scope = character_private
-        "safety_memories":    [],   # scope = safety_global
+        "user_memories":      [serialise(r) for r in user_memories],
+        "character_memories": [serialise(r) for r in character_memories],
+        "safety_memories":    [serialise(r) for r in safety_memories],
         "filters": {
             "user_id":      user_id,
             "character_id": character_id,
             "mode":         "filtered" if (user_id or character_id) else "full_table",
+            "total_rows":   len(rows),
         },
     })
 

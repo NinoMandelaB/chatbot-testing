@@ -4,7 +4,8 @@ memory/summariser.py  —  Conversation summarisation for hybrid memory.
 After every SUMMARISE_EVERY turns the /chat endpoint calls maybe_summarise().
 This module:
   1. Builds a compact prompt from the recent conversation history.
-  2. Calls the LLM to compress it into a single paragraph (~150 words).
+  2. Calls the LLM (same model the user selected for chat) to compress the
+     conversation into a single paragraph (~150 words).
   3. Deactivates the previous summary for this (user_id, character_id) pair.
   4. Writes the new summary to conversation_summaries via memory/db.py.
 
@@ -13,7 +14,14 @@ giving the LLM long-term context without consuming many tokens.
 
 Token budget: one LLM call per SUMMARISE_EVERY turns; the call uses ~300
 prompt tokens and returns ~150 tokens.  Skipped entirely when DATABASE_URL
-or CORTECS_API_KEY is not configured.
+or the API key is not configured.
+
+Model selection
+---------------
+The model used for summarisation matches the model the user selected for chat
+(passed in via the `model` parameter).  If no model is provided, it falls back
+to the CORTECS_SUMMARY_MODEL env var, or finally to DEFAULT_SUMMARY_MODEL.
+This means switching models in the UI affects both chat AND summarisation.
 """
 
 import logging
@@ -26,11 +34,11 @@ from memory import db
 
 log = logging.getLogger(__name__)
 
-# Summarise after this many new turns (user + assistant counts as 1 turn).
+# How many user turns must accumulate before a new summary is generated.
 SUMMARISE_EVERY: int = 6
 
-# Model used for summarisation.  Intentionally a small, fast model.
-_SUMMARY_MODEL: str = os.environ.get("CORTECS_SUMMARY_MODEL", "qwen3.5-9b")
+# Fallback model when no model is passed in and the env var is not set.
+DEFAULT_SUMMARY_MODEL: str = "qwen3.5-9b"
 
 # System prompt that instructs the model to produce a terse summary.
 _SYSTEM_PROMPT = (
@@ -49,6 +57,7 @@ def maybe_summarise(
     history: list[dict],
     api_key: str,
     base_url: str,
+    model: Optional[str] = None,
 ) -> None:
     """
     Trigger a summary update if the conversation has grown long enough.
@@ -58,8 +67,12 @@ def maybe_summarise(
     user_id      : identifies the end user.
     character_id : identifies the AI character / persona.
     history      : list of {role, content} dicts (the full conversation so far).
-    api_key      : Cortecs API key (forwarded from app config).
+    api_key      : Cortecs API key.
     base_url     : Cortecs base URL.
+    model        : LLM model name to use for summarisation.  Defaults to the
+                   CORTECS_SUMMARY_MODEL env var, falling back to
+                   DEFAULT_SUMMARY_MODEL.  Pass the same model the user selected
+                   in the UI so summarisation stays in sync with the chat model.
 
     This function is intentionally fire-and-forget: any error is logged but
     never re-raised, so it never blocks the main chat response.
@@ -77,8 +90,15 @@ def maybe_summarise(
     if user_turns < SUMMARISE_EVERY:
         return
 
+    # Resolve the model: caller > env var > hardcoded default.
+    resolved_model = (
+        model
+        or os.environ.get("CORTECS_SUMMARY_MODEL")
+        or DEFAULT_SUMMARY_MODEL
+    )
+
     try:
-        _run_summarise(user_id, character_id, history, api_key, base_url)
+        _run_summarise(user_id, character_id, history, api_key, base_url, resolved_model)
     except Exception as exc:
         log.error("summariser.maybe_summarise failed: %s", exc)
 
@@ -93,6 +113,7 @@ def _run_summarise(
     history: list[dict],
     api_key: str,
     base_url: str,
+    model: str,
 ) -> None:
     """Build the LLM prompt, call the API, and persist the result."""
     # Take the most recent 20 messages to keep the prompt compact.
@@ -105,7 +126,7 @@ def _run_summarise(
     # Call the LLM.
     client = OpenAI(api_key=api_key, base_url=base_url)
     response = client.chat.completions.create(
-        model=_SUMMARY_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": f"Conversation to summarise:\n\n{conversation_text}"},
@@ -121,14 +142,17 @@ def _run_summarise(
         summary_text = (getattr(msg, "content", "") or "").strip()
 
     if not summary_text:
-        log.warning("summariser: LLM returned empty summary for user=%s char=%s", user_id, character_id)
+        log.warning(
+            "summariser: LLM returned empty summary for user=%s char=%s model=%s",
+            user_id, character_id, model,
+        )
         return
 
     # Persist: deactivate the old summary, then insert the new one.
     db.upsert_summary(user_id, character_id, summary_text, turn_count)
     log.info(
-        "summariser: updated summary for user=%s char=%s (%d turns)",
-        user_id, character_id, turn_count,
+        "summariser: updated summary for user=%s char=%s (%d turns, model=%s)",
+        user_id, character_id, turn_count, model,
     )
 
 

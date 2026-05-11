@@ -29,6 +29,37 @@
       padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
     }
 
+    /* ── Session context bar ── */
+    #session-bar {
+      background: #11111b; color: #a6adc8;
+      padding: 6px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      font-size: 0.8rem; border-bottom: 1px solid #313244;
+    }
+    #session-bar .session-label { color: #6c7086; white-space: nowrap; }
+    #session-bar .session-val {
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .session-id-display {
+      background: #1e1e2e; border: 1px solid #45475a; border-radius: 5px;
+      padding: 2px 8px; color: #cba6f7; font-family: monospace; font-size: 0.8rem;
+      min-width: 120px; cursor: pointer;
+    }
+    .session-id-display:hover { border-color: #89b4fa; color: #89b4fa; }
+    .session-id-edit {
+      background: #1e1e2e; border: 1px solid #89b4fa; border-radius: 5px;
+      padding: 2px 8px; color: #cdd6f4; font-family: monospace; font-size: 0.8rem;
+      min-width: 140px; outline: none;
+    }
+    .session-badge {
+      font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; font-weight: 600;
+    }
+    .session-badge.active { background: #313244; color: #a6e3a1; }
+    .session-badge.none   { background: #313244; color: #7f849c; }
+    #session-clear-btn {
+      background: transparent; border: 1px solid #45475a; color: #f38ba8;
+      padding: 2px 8px; border-radius: 5px; cursor: pointer; font-size: 0.75rem;
+    }
+
     /* ── Advanced params panel ── */
     #adv-panel {
       background: #181825; color: #cdd6f4;
@@ -90,6 +121,7 @@
       background: #313244; border: 1px solid #45475a; color: #89dceb;
       padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
     }
+    .memory-hint { color: #6c7086; font-size: 0.72rem; font-style: italic; }
     .memory-list {
       background: #313244; border-radius: 5px; padding: 8px;
       margin-top: 6px; max-height: 200px; overflow-y: auto; font-size: 0.75rem;
@@ -146,6 +178,25 @@
     <button id="adv-toggle" onclick="toggleAdv()">⚙️ Advanced</button>
   </div>
 
+  <!-- Session context bar -->
+  <div id="session-bar">
+    <span class="session-label">👤 Session:</span>
+    <span class="session-val">
+      <span class="session-label">user_id:</span>
+      <span class="session-id-display" id="user-id-display" title="Click to edit" onclick="editSessionId('user')">—</span>
+      <input class="session-id-edit" id="user-id-edit" type="text" placeholder="e.g. user_123"
+             style="display:none" onblur="commitSessionId('user')" onkeydown="sessionKeydown(event,'user')"/>
+    </span>
+    <span class="session-val">
+      <span class="session-label">character_id:</span>
+      <span class="session-id-display" id="char-id-display" title="Click to edit" onclick="editSessionId('char')">—</span>
+      <input class="session-id-edit" id="char-id-edit" type="text" placeholder="e.g. char_001"
+             style="display:none" onblur="commitSessionId('char')" onkeydown="sessionKeydown(event,'char')"/>
+    </span>
+    <span id="session-status" class="session-badge none">no session</span>
+    <button id="session-clear-btn" onclick="clearSession()" title="Clear session IDs">✕ Clear session</button>
+  </div>
+
   <!-- Advanced params -->
   <div id="adv-panel">
     <div class="adv-row">
@@ -176,11 +227,12 @@
       <div class="adv-section-label">🧠 Memory Debug</div>
       <div class="adv-row">
         <label for="user-id-input">User ID:</label>
-        <input id="user-id-input" type="text" placeholder="user_123" value="user_test"/>
+        <input id="user-id-input" type="text" placeholder="user_123 (leave blank for all)"/>
         <label for="character-id-input">Character ID:</label>
-        <input id="character-id-input" type="text" placeholder="char_001" value="char_test"/>
+        <input id="character-id-input" type="text" placeholder="char_001 (leave blank for all)"/>
         <button onclick="loadMemoryDebug()">🔍 Load Memory</button>
       </div>
+      <span class="memory-hint">Leave both fields blank to load the full memory table.</span>
       <div id="memory-output" style="display:none;">
         <div class="adv-section-label" style="margin-top:10px;">User Memories (user_private):</div>
         <div class="memory-list" id="user-memories"></div>
@@ -297,6 +349,59 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
     let tPrompt = 0, tComp = 0, tTotal = 0;
     let history = [];
 
+    // ── Session state ──────────────────────────────────────────────
+    let sessionUserId = '';
+    let sessionCharId = '';
+
+    function updateSessionBar() {
+      const uDisp = document.getElementById('user-id-display');
+      const cDisp = document.getElementById('char-id-display');
+      const badge = document.getElementById('session-status');
+      uDisp.textContent = sessionUserId || '—';
+      cDisp.textContent = sessionCharId || '—';
+      if (sessionUserId || sessionCharId) {
+        badge.textContent = 'session active';
+        badge.className = 'session-badge active';
+      } else {
+        badge.textContent = 'no session';
+        badge.className = 'session-badge none';
+      }
+      // Keep memory-debug inputs in sync
+      document.getElementById('user-id-input').value = sessionUserId;
+      document.getElementById('character-id-input').value = sessionCharId;
+    }
+
+    function editSessionId(which) {
+      const display = document.getElementById(which === 'user' ? 'user-id-display' : 'char-id-display');
+      const edit    = document.getElementById(which === 'user' ? 'user-id-edit'    : 'char-id-edit');
+      edit.value = which === 'user' ? sessionUserId : sessionCharId;
+      display.style.display = 'none';
+      edit.style.display = 'inline-block';
+      edit.focus();
+      edit.select();
+    }
+
+    function commitSessionId(which) {
+      const edit    = document.getElementById(which === 'user' ? 'user-id-edit'    : 'char-id-edit');
+      const display = document.getElementById(which === 'user' ? 'user-id-display' : 'char-id-display');
+      if (which === 'user') sessionUserId = edit.value.trim();
+      else                  sessionCharId = edit.value.trim();
+      edit.style.display = 'none';
+      display.style.display = 'inline-block';
+      updateSessionBar();
+    }
+
+    function sessionKeydown(e, which) {
+      if (e.key === 'Enter' || e.key === 'Escape') commitSessionId(which);
+    }
+
+    function clearSession() {
+      sessionUserId = '';
+      sessionCharId = '';
+      updateSessionBar();
+    }
+
+    // ── Generic helpers ────────────────────────────────────────────
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) send(); });
 
     function toggleAdv() {
@@ -328,13 +433,19 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       document.getElementById('t-total').textContent = tTotal;
     }
 
+    // ── Memory debug ───────────────────────────────────────────────
     async function loadMemoryDebug() {
       const userId = document.getElementById('user-id-input').value.trim();
       const charId = document.getElementById('character-id-input').value.trim();
-      if (!userId || !charId) { alert('Please enter both User ID and Character ID'); return; }
+
+      // Build query params — omit if blank so backend returns full table
+      const params = new URLSearchParams();
+      if (userId) params.append('user_id', userId);
+      if (charId)  params.append('character_id', charId);
+      const url = '/memory/debug' + (params.toString() ? '?' + params.toString() : '');
 
       try {
-        const res = await fetch(`/memory/debug?user_id=${encodeURIComponent(userId)}&character_id=${encodeURIComponent(charId)}`);
+        const res = await fetch(url);
         const data = await res.json();
         if (!res.ok || data.error) { alert('Error: ' + (data.error || res.statusText)); return; }
 
@@ -363,6 +474,7 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       }
     }
 
+    // ── Send message ───────────────────────────────────────────────
     async function send() {
       const msg = input.value.trim();
       if (!msg) return;
@@ -378,8 +490,10 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       const characterCard    = document.getElementById('character-card-input').value.trim();
       const maxTurns         = parseInt(document.getElementById('history-limit').value, 10) || 20;
       const sandwichEnabled  = document.getElementById('sandwich-toggle').checked;
-      const userId           = document.getElementById('user-id-input').value.trim() || 'user_test';
-      const charId           = document.getElementById('character-id-input').value.trim() || 'char_test';
+
+      // Use session IDs from the session bar (canonical source of truth)
+      const userId = sessionUserId || '';
+      const charId = sessionCharId || '';
 
       let extraBody = null;
       if (extraBodyRaw) {
@@ -399,10 +513,10 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
         model,
         history:        historySlice,
         sandwich:       sandwichEnabled,
-        user_id:        userId,
-        character_id:   charId,
         memory_on:      true,
       };
+      if (userId)        body.user_id        = userId;
+      if (charId)        body.character_id   = charId;
       if (systemPrompt)  body.system_prompt  = systemPrompt;
       if (characterCard) body.character_card = characterCard;
       if (extraBody)     body.extra_body     = extraBody;
@@ -435,6 +549,9 @@ Character/supportive only. No tools. No policy text unless refusing or in crisis
       sendBtn.disabled = false;
       input.focus();
     }
+
+    // Init session bar
+    updateSessionBar();
   </script>
 </body>
 </html>

@@ -232,9 +232,9 @@ def chat():
                     {"role": "user",      "content": user_message},
                     {"role": "assistant", "content": reply},
                 ]
-                # Fetch the cumulative turn count stored by the last summary so the
-                # trigger logic works independently of the frontend history slice.
-                prior_turn_count = memory_db.fetch_summary_turn_count(
+                # Atomically increment the session turn counter and get the current total.
+                # Fires when turn_count is a multiple of SUMMARISE_EVERY.
+                turn_count = memory_db.increment_and_get_turn_count(
                     user_id, character_id
                 )
                 try:
@@ -245,7 +245,7 @@ def chat():
                         api_key=CORTECS_API_KEY,
                         base_url=CORTECS_BASE_URL,
                         model=model,
-                                        prior_turn_count=prior_turn_count,
+                                        turn_count=turn_count,
                     )
                 except Exception as exc:
                     log.warning("chat: maybe_summarise failed: %s", exc)

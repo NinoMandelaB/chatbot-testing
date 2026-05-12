@@ -515,7 +515,6 @@ def _should_skip_fact(text: str) -> bool:
         or lower.startswith("scene:")
         or len(lower) < 8
     )
-    return any(x in lower for x in blocked_fragments)
 
 
 def _write_safety_flag(

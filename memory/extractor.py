@@ -347,7 +347,6 @@ def _should_skip_fact(text: str) -> bool:
         "roleplay",
         "assistant",
         "greeted the assistant",
-        "user is x years old",
     )
     return any(x in lower for x in blocked_fragments)
 

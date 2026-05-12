@@ -493,19 +493,15 @@ def _message_indicates_csam(message: str) -> bool:
 
 
 def _should_skip_fact(text: str) -> bool:
-    lower = text.lower()
-    blocked_fragments = (
-        "sexual object",
-        "fuck slut",
-        "secret relationship",
-        "shared with others",
-        "spread legs",
-        "touch me",
-        "plaything",
-        "be used by",
-        "roleplay",
-        "assistant",
-        "greeted the assistant",
+    lower = text.lower().strip()
+    return (
+        not lower
+        or lower.startswith("user said ")
+        or lower.startswith("assistant said ")
+        or lower.startswith("the assistant ")
+        or lower.startswith("roleplay:")
+        or lower.startswith("scene:")
+        or len(lower) < 8
     )
     return any(x in lower for x in blocked_fragments)
 

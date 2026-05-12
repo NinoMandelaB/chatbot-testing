@@ -207,12 +207,14 @@ def chat():
             # the extractor stays in sync with the active chat model.
             try:
                 memory_extractor.extract_and_store(
-                    user_message=user_message,
-                    user_id=user_id,
-                    character_id=character_id,
-                    conversation_id=None,  # no per-conversation ID in this app
-                    llm_client=client,
-                    model=model,
+                user_message=user_message,
+                user_id=user_id,
+                character_id=character_id,
+                conversation_id=character_id,  # stable conv key
+                llm_client=client,
+                model=model,
+                history=history,               # pass the history list
+            )
                 )
             except Exception as exc:
                 log.warning("chat: extract_and_store failed: %s", exc)

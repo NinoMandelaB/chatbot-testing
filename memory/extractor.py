@@ -218,6 +218,7 @@ def extract_and_store(
     conversation_id: Optional[str],
     llm_client: OpenAI,
     model: str,
+    history: Optional[list[dict]] = None,  # ← add this
 ) -> list[int]:
     """
     Extract durable personal facts and global safety risks from current message
@@ -227,7 +228,7 @@ def extract_and_store(
         return []
 
     inserted_ids: list[int] = []
-    ctx = _build_context(user_message, user_id, conversation_id)
+    ctx = _build_context(user_message, user_id, conversation_id, history=history)
     scan_text = ctx["scan_text"]
 
     _handle_keyword_safety(scan_text, user_id, conversation_id)
@@ -283,30 +284,25 @@ def _build_context(
     user_message: str,
     user_id: str,
     conversation_id: Optional[str],
+    history: Optional[list[dict]] = None,
 ) -> dict[str, str]:
-    """
-    Build compact context from:
-    - current user message
-    - last 3 user messages in this conversation
-    - same-conversation memory facts
-    - conversation summary
+    # Use passed history if available, otherwise try the DB
+    if history:
+        recent_msgs = [
+            t["content"] for t in history
+            if isinstance(t, dict) and t.get("role") == "user"
+        ][-HISTORY_TURNS:]
+    else:
+        recent_msgs = _get_recent_user_messages(user_id, conversation_id, limit=HISTORY_TURNS)
 
-    Returns:
-    - scan_text: concatenated plain text for keyword guards
-    - llm_input: compact structured text for the model
-    """
-    history = _get_recent_user_messages(user_id, conversation_id, limit=HISTORY_TURNS)
     facts = _get_conversation_facts(user_id, conversation_id, limit=MAX_FACTS)
     summary = _get_conversation_summary(user_id, conversation_id)
 
-    history_block = "\n".join(f"- {m}" for m in history if m)
+    history_block = "\n".join(f"- {m}" for m in recent_msgs if m)
     facts_block = "\n".join(f"- {f}" for f in facts if f)
-
     summary = _clip(summary, MAX_SUMMARY_CHARS)
 
-    llm_parts = [
-        f"CURRENT USER MESSAGE:\n{_clip(user_message, 700)}",
-    ]
+    llm_parts = [f"CURRENT USER MESSAGE:\n{_clip(user_message, 700)}"]
     if history_block:
         llm_parts.append(f"LAST {HISTORY_TURNS} USER MESSAGES:\n{history_block}")
     if facts_block:
@@ -314,16 +310,12 @@ def _build_context(
     if summary:
         llm_parts.append(f"CONVERSATION SUMMARY:\n{summary}")
 
-    llm_input = "\n\n".join(llm_parts)
-    llm_input = _clip(llm_input, MAX_CONTEXT_CHARS)
+    llm_input = _clip("\n\n".join(llm_parts), MAX_CONTEXT_CHARS)
 
-    scan_parts = [user_message]
-    scan_parts.extend(history)
-    scan_parts.extend(facts)
+    scan_parts = [user_message] + recent_msgs + facts
     if summary:
         scan_parts.append(summary)
-    scan_text = "\n".join(x for x in scan_parts if x)
-    scan_text = _clip(scan_text, MAX_CONTEXT_CHARS)
+    scan_text = _clip("\n".join(x for x in scan_parts if x), MAX_CONTEXT_CHARS)
 
     return {"scan_text": scan_text, "llm_input": llm_input}
 
@@ -334,7 +326,8 @@ def _get_recent_user_messages(
     limit: int = 3,
 ) -> list[str]:
     """
-    Best-effort fetch of recent user messages for this conversation.
+    Best-effort fetch of recent user messages from DB.
+    Only used when history is not passed directly.
     Falls back cleanly if the DB helper does not exist.
     """
     if not conversation_id:

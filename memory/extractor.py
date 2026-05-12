@@ -64,12 +64,16 @@ SAFETY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "mtumwa wa ngono", "kumpitisha kwa wanaume",
     ),
     "gender_violence": (
-        "fgm", "female genital mutilation", "cut her", "cut the girl",
-        "honour killing", "honor killing", "forced marriage",
-        "marry her off", "rape her", "beat your wife", "beat my wife",
-        "domestic violence", "intimate partner violence", "acid attack",
-        "ukeketaji", "kumkeketa", "mkate msichana", "ndoa ya lazima",
-        "olewa kwa lazima", "ubakaji", "mpige mke", "ukatili wa kijinsia",
+            "fgm", "female genital mutilation", "cut her", "cut the girl",
+            "honour killing", "honor killing", "forced marriage", "marry her off",
+            "rape her", "beat your wife", "beat my wife", "domestic violence",
+            "intimate partner violence", "acid attack", "ukeketaji", "kumkeketa",
+            "mkate msichana", "ndoa ya lazima", "olewa kwa lazima",
+            "ubakaji", "mpige mke", "ukatili wa kijinsia", 
+            "cut my clit", "cut her clit", "cut off clit",
+            "female circumcision", "circumcise her", "circumcise me",
+            "clitoris removed", "clitoris cut", "kata uke wangu", "kata clitoris", "tohara ya msichana",
+            "kukatwa sehemu", "ukeketaji wangu",
     ),
 }
 
@@ -108,7 +112,11 @@ GENDER_VIOLENCE_HINTS: tuple[str, ...] = (
     "rape her", "beat your wife", "beat my wife", "domestic violence",
     "intimate partner violence", "acid attack", "ukeketaji", "kumkeketa",
     "mkate msichana", "ndoa ya lazima", "olewa kwa lazima",
-    "ubakaji", "mpige mke", "ukatili wa kijinsia",
+    "ubakaji", "mpige mke", "ukatili wa kijinsia", 
+    "cut my clit", "cut her clit", "cut off clit",
+    "female circumcision", "circumcise her", "circumcise me",
+    "clitoris removed", "clitoris cut", "kata uke wangu", "kata clitoris", "tohara ya msichana",
+    "kukatwa sehemu", "ukeketaji wangu",
 )
 
 # Violent intent indicators to avoid flagging generic mentions of weapons.

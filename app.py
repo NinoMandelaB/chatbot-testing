@@ -25,7 +25,7 @@ DEFAULT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are a helpful assis
 # ---------------------------------------------------------------------------
 SAFETY_REMINDER = """[SAFETY & SCOPE REMINDER - re-read before generating your response]
 
-NSFW adult roleplay IS allowed and encouraged. Stay immersive, in-character, and explicit if the scene calls for it.
+NSFW adult roleplay IS allowed. Stay immersive, in-character, and explicit if the scene calls for it.
 
 HARD STOP - exit scene IMMEDIATELY and use the refusal template if the current message contains ANY of:
 - Sexual content involving a clear minor/underage signal, e.g. child, minor, underage, teen, 17, schoolgirl, schoolboy, barely legal, too young, young-looking, still developing, little girl, little boy

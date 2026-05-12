@@ -195,8 +195,11 @@ Rules:
   * ongoing life situation
   * long-term relationships
   * durable goals, plans, or responsibilities
+  * relationship between user and character / assistant
+- Broad recurring preferences may be stored, 
 - Do NOT store:
-  * scene content, roleplay content, erotic instructions, fantasy statements
+  * explicit scene content, erotic instructions, fetish detail, or fantasy scripts
+  * one-off roleplay scenarios or quoted sexual lines
   * one-off requests, momentary chat actions, or temporary conversational details
   * moderation events, refusals, blocked content, or safety labels
   * assistant text, paraphrases of the chat, or meta commentary

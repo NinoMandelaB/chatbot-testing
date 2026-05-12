@@ -188,7 +188,19 @@ Rules:
 - Ignore consensual adult sexual content.
 - Ignore adult taboo roleplay unless it clearly matches an allowed category.
 - Never put safety items into facts.
-- facts = only durable user facts; no sexual roleplay details, no moderation details, no filler, no assistant text.
+
+- facts = only stable, durable user information:
+  * identity or biography
+  * lasting preferences
+  * ongoing life situation
+  * long-term relationships
+  * durable goals, plans, or responsibilities
+- Do NOT store:
+  * scene content, roleplay content, erotic instructions, fantasy statements
+  * one-off requests, momentary chat actions, or temporary conversational details
+  * moderation events, refusals, blocked content, or safety labels
+  * assistant text, paraphrases of the chat, or meta commentary
+- If unsure whether something is durable, omit it.
 - owner="user", scope="user_private", temporal_tag=current|historical|resolved.
 - importance: 1.0 default, 2.0 distress, 3.0 crisis.
 - resolution_signals: plain resolved keywords only.

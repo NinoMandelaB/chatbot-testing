@@ -215,7 +215,7 @@ def chat():
                 model=model,
                 history=history,               # pass the history list
             )
-                )
+                
             except Exception as exc:
                 log.warning("chat: extract_and_store failed: %s", exc)
 
